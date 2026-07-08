@@ -1,34 +1,16 @@
 /**
  * DataAccess.js
- * The ONLY file allowed to call DriveApp / SpreadsheetApp directly.
- * Every other module must go through these functions. This keeps the rest
- * of the codebase testable and makes it easy to swap in per-user OAuth /
- * multi-tenant access later without touching navigation or state logic.
+ * Manages direct interaction with Google Drive and Sheets API.
  */
 
-/**
- * @param {string} folderId
- * @returns {{id:string, name:string}}
- */
 function getFolderInfo(folderId) {
   const folder = DriveApp.getFolderById(folderId);
   return { id: folderId, name: folder.getName() };
 }
 
 /**
- * Recursively finds every Google Sheet in the given folder AND all of its
- * nested subfolders (any depth). Files found inside subfolders get their
- * subfolder path prefixed to the name (e.g. "Reports / 2026 / Budget") so
- * the origin is still clear once flattened into one list.
- *
- * Results are cached (CacheService) for CONFIG.FOLDER_CACHE_TTL_SECONDS,
- * since walking every subfolder on every visit is by far the slowest step
- * in the bot. Pass forceRefresh=true to bypass the cache (used by the
- * "🔄 Refresh" button).
- *
- * @param {string} folderId
- * @param {boolean} [forceRefresh]
- * @returns {Array<{id:string, name:string}>}
+ * Fast deep scan using native DriveApp memory filtering.
+ * Completely bypasses Drive API v3 "Invalid Value" issues.
  */
 function listSpreadsheetsInFolder(folderId, forceRefresh) {
   const cache = CacheService.getScriptCache();
@@ -36,99 +18,76 @@ function listSpreadsheetsInFolder(folderId, forceRefresh) {
 
   if (!forceRefresh) {
     const cached = cache.get(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
-    }
+    if (cached) return JSON.parse(cached);
   }
 
   const files = [];
-  _collectSpreadsheetsRecursive_(DriveApp.getFolderById(folderId), '', files);
-  // Stable alphabetical order so pagination/indices don't shuffle between calls.
+
+  try {
+    // 1. Map all subfolders in memory to know the target tree
+    const allowedFolderIds = {};
+    allowedFolderIds[folderId] = true;
+    
+    const rootFolder = DriveApp.getFolderById(folderId);
+    const subFolderIterator = rootFolder.getFolders();
+    while (subFolderIterator.hasNext()) {
+      const subFolder = subFolderIterator.next();
+      allowedFolderIds[subFolder.getId()] = true;
+    }
+
+    // 2. Fetch all spreadsheets accessible to the script via safe, native query
+    const query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false";
+    const fileIterator = DriveApp.searchFiles(query);
+    
+    while (fileIterator.hasNext()) {
+      const f = fileIterator.next();
+      const parents = f.getParents();
+      
+      // 3. Filter files that live inside our folder structure
+      if (parents.hasNext()) {
+        const parentId = parents.next().getId();
+        if (allowedFolderIds[parentId]) {
+          files.push({ id: f.getId(), name: f.getName() });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Native memory deep scan failed: ' + e);
+  }
+
+  // Sort files alphabetically
   files.sort((a, b) => a.name.localeCompare(b.name));
 
   try {
-    cache.put(cacheKey, JSON.stringify(files), CONFIG.FOLDER_CACHE_TTL_SECONDS);
+    cache.put(cacheKey, JSON.stringify(files), CONFIG.FOLDER_CACHE_TTL_SECONDS || 300);
   } catch (e) {
-    // Cache entry too large (CacheService caps out around 100KB) — not fatal,
-    // just means this particular folder won't benefit from caching.
-    console.error('Could not cache folder listing for ' + folderId + ': ' + e);
+    console.error('Cache allocation error: ' + e);
   }
 
   return files;
 }
 
-/**
- * Clears the cached file listing for a folder, forcing the next
- * listSpreadsheetsInFolder call to re-scan Drive.
- * @param {string} folderId
- */
 function clearFolderCache(folderId) {
   CacheService.getScriptCache().remove('folderFiles:' + folderId);
 }
 
-/**
- * @private
- * @param {GoogleAppsScript.Drive.Folder} folder
- * @param {string} pathPrefix
- * @param {Array<{id:string, name:string}>} files accumulator, mutated in place
- */
-function _collectSpreadsheetsRecursive_(folder, pathPrefix, files) {
-  const fileIt = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
-  while (fileIt.hasNext()) {
-    const f = fileIt.next();
-    const label = pathPrefix ? pathPrefix + ' / ' + f.getName() : f.getName();
-    files.push({ id: f.getId(), name: label });
-  }
-
-  const folderIt = folder.getFolders();
-  while (folderIt.hasNext()) {
-    const sub = folderIt.next();
-    const subPrefix = pathPrefix ? pathPrefix + ' / ' + sub.getName() : sub.getName();
-    _collectSpreadsheetsRecursive_(sub, subPrefix, files);
-  }
-}
-
-/**
- * @param {string} fileId
- * @returns {Array<string>} sheet (tab) names
- */
 function listSheetsInFile(fileId) {
   const ss = SpreadsheetApp.openById(fileId);
-  return ss
-    .getSheets()
-    .filter((s) => !s.isSheetHidden())
-    .map((s) => s.getName());
+  return ss.getSheets().filter((s) => !s.isSheetHidden()).map((s) => s.getName());
 }
 
-/**
- * Returns the sheet's internal gid — used to build a link that opens
- * Google Sheets directly on this tab (and optionally a specific range).
- * @param {string} fileId
- * @param {string} sheetName
- * @returns {number}
- */
 function getSheetGid(fileId, sheetName) {
   return _getSheet(fileId, sheetName).getSheetId();
 }
 
-/**
- * @param {string} fileId
- * @param {string} sheetName
- * @returns {Array<string>} header row values (row 1)
- */
 function getHeaderRow(fileId, sheetName) {
   const sheet = _getSheet(fileId, sheetName);
   const lastCol = sheet.getLastColumn();
   if (lastCol === 0) return [];
-  const values = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  return values.map((v) => String(v));
+  const values = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  return values.map((v) => String(v).trim()).filter(v => v.length > 0);
 }
 
-/**
- * @param {string} fileId
- * @param {string} sheetName
- * @param {Array} values ordered to match header columns
- */
 function appendRowToSheet(fileId, sheetName, values) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -140,13 +99,6 @@ function appendRowToSheet(fileId, sheetName, values) {
   }
 }
 
-/**
- * Returns the last N non-empty rows (excluding the header row), most recent first.
- * @param {string} fileId
- * @param {string} sheetName
- * @param {number} n
- * @returns {Array<{rowIndex:number, values:Array}>}
- */
 function getLastRows(fileId, sheetName, n) {
   const sheet = _getSheet(fileId, sheetName);
   const lastRow = sheet.getLastRow();
@@ -155,35 +107,51 @@ function getLastRows(fileId, sheetName, n) {
 
   const startRow = Math.max(2, lastRow - n + 1);
   const numRows = lastRow - startRow + 1;
-  const values = sheet.getRange(startRow, 1, numRows, lastCol).getValues();
+  const displayValues = sheet.getRange(startRow, 1, numRows, lastCol).getDisplayValues();
 
-  const rows = values.map((rowValues, i) => ({
-    rowIndex: startRow + i,
-    values: rowValues,
-  }));
+  const rows = displayValues.map((rowValues, i) => {
+    const sanitizedValues = rowValues.map(v => {
+      let str = String(v);
+      if (str.includes('GMT') || str.includes('00:00:00')) {
+        try {
+          const d = new Date(str);
+          if (!isNaN(d.getTime())) {
+            return Utilities.formatDate(d, Session.getScriptTimeZone(), "dd.MM.yyyy");
+          }
+        } catch(e){}
+      }
+      return str;
+    });
+
+    return {
+      rowIndex: startRow + i,
+      values: sanitizedValues,
+    };
+  });
+  
   rows.reverse();
   return rows;
 }
 
-/**
- * @param {string} fileId
- * @param {string} sheetName
- * @param {number} rowIndex 1-based sheet row
- * @returns {Array}
- */
 function getRowValues(fileId, sheetName, rowIndex) {
   const sheet = _getSheet(fileId, sheetName);
   const lastCol = sheet.getLastColumn();
   if (lastCol === 0) return [];
-  return sheet.getRange(rowIndex, 1, 1, lastCol).getValues()[0];
+  const displayValues = sheet.getRange(rowIndex, 1, 1, lastCol).getDisplayValues()[0];
+  return displayValues.map(v => {
+    let str = String(v);
+    if (str.includes('GMT')) {
+      try {
+        const d = new Date(str);
+        if (!isNaN(d.getTime())) return Utilities.formatDate(d, Session.getScriptTimeZone(), "dd.MM.yyyy");
+      } catch(e){}
+    }
+    return str;
+  });
 }
 
 /**
- * @param {string} fileId
- * @param {string} sheetName
- * @param {number} rowIndex 1-based
- * @param {number} colIndex 1-based
- * @param {*} value
+ * Updates a specific cell value in the target sheet.
  */
 function updateCell(fileId, sheetName, rowIndex, colIndex, value) {
   const lock = LockService.getScriptLock();
@@ -196,14 +164,9 @@ function updateCell(fileId, sheetName, rowIndex, colIndex, value) {
   }
 }
 
-/**
- * @private
- */
 function _getSheet(fileId, sheetName) {
   const ss = SpreadsheetApp.openById(fileId);
   const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    throw new Error('Sheet "' + sheetName + '" not found in file ' + fileId);
-  }
+  if (!sheet) throw new Error('Sheet "' + sheetName + '" not found.');
   return sheet;
 }

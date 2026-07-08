@@ -29,6 +29,11 @@ function getState(chatId) {
  * @param {Object} state
  */
 function setState(chatId, state) {
+  // Защита от переполнения 9KB лимита PropertiesService:
+  // Никогда не храним кэшируемые списки файлов/листов в долгосрочном стейте.
+  if (state.fileList) delete state.fileList;
+  if (state.sheetList) delete state.sheetList;
+  
   PropertiesService.getScriptProperties().setProperty(
     STATE_PREFIX + chatId,
     JSON.stringify(state)
