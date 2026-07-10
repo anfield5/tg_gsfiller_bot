@@ -14,7 +14,15 @@ function doPost(e) {
 }
 
 function handleMessage(message) {
-  const chatId = message.chat.id;
+  const chatId = String(message.chat.id);
+  
+  // Security: Fetch allowed IDs from Script Properties to keep repository private
+  const adminIds = PropertiesService.getScriptProperties().getProperty('ADMIN_IDS') || "";
+  if (!adminIds.split(',').includes(chatId)) {
+    sendMessage(message.chat.id, "🚫 Access denied. You are not authorized to use this bot.");
+    return;
+  }
+
   const text = (message.text || '').trim();
 
   if (text === '/start') { clearState(chatId); showMainMenu(chatId); return; }

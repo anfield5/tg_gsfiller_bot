@@ -57,7 +57,11 @@ function showMainMenu(chatId) {
 
 function handleContinue(chatId) {
   const lastPath = getLastPath(chatId);
-  if (!lastPath) { showMainMenu(chatId); return; }
+  if (!lastPath) { 
+    showMainMenu(chatId); 
+    return; 
+  }
+  
   let sheets;
   try {
     sheets = actionListSheets(lastPath.fileId);
@@ -66,6 +70,7 @@ function handleContinue(chatId) {
     showMainMenu(chatId);
     return;
   }
+  
   const state = {
     step: 'sheet_menu',
     folderIndex: lastPath.folderIndex,
@@ -81,7 +86,10 @@ function handleContinue(chatId) {
 
 function handleFolderSelect(chatId, folderIndex) {
   const folderId = CONFIG.FOLDER_IDS[folderIndex];
-  if (!folderId) { showMainMenu(chatId); return; }
+  if (!folderId) { 
+    showMainMenu(chatId); 
+    return; 
+  }
   
   let folderName = CONFIG.FOLDER_LABELS[folderIndex];
   if (!folderName) {
@@ -158,10 +166,15 @@ function handleFileSelect(chatId, fileIndex) {
   const state = getState(chatId);
   
   let files = [];
-  try { files = actionListSpreadsheets(state.folderId); } catch(e){}
+  try { 
+    files = actionListSpreadsheets(state.folderId); 
+  } catch(e){}
   
   const file = files[fileIndex];
-  if (!file) { renderFileList(chatId, state); return; }
+  if (!file) { 
+    renderFileList(chatId, state); 
+    return; 
+  }
   
   let sheets;
   try { 
@@ -182,7 +195,11 @@ function handleFileSelect(chatId, fileIndex) {
 
 function renderSheetList(chatId, state, sheets) {
   if (!sheets) {
-    try { sheets = actionListSheets(state.fileId); } catch(e){ sheets = []; }
+    try { 
+      sheets = actionListSheets(state.fileId); 
+    } catch(e){ 
+      sheets = []; 
+    }
   }
   
   const keyboardRows = sheets.map((name, idx) => [{ label: '📑 ' + name, value: 'sheet:' + idx }]);
@@ -194,10 +211,15 @@ function handleSheetSelect(chatId, sheetIndex) {
   const state = getState(chatId);
   
   let sheets = [];
-  try { sheets = actionListSheets(state.fileId); } catch(e){}
+  try { 
+    sheets = actionListSheets(state.fileId); 
+  } catch(e){}
   
   const sheetName = sheets[sheetIndex];
-  if (!sheetName) { renderSheetList(chatId, state, sheets); return; }
+  if (!sheetName) { 
+    renderSheetList(chatId, state, sheets); 
+    return; 
+  }
   
   state.sheetName = sheetName;
   setLastPath(chatId, {
@@ -238,6 +260,7 @@ function handleAddStart(chatId) {
   state.currentFieldIndex = 0;
   state.formData = {};
   state.lastRowValues = (lastRows.length > 0) ? lastRows[0].values : null;
+  state.lastRowIndex = (lastRows.length > 0) ? lastRows[0].rowIndex : 1;
   
   sendFieldPrompt(chatId, state);
 }
@@ -245,8 +268,40 @@ function handleAddStart(chatId) {
 function sendFieldPrompt(chatId, state) {
   const headers = state.headers || [];
   const idx = state.currentFieldIndex || 0;
-  const fieldName = headers[idx];
 
+  if (idx >= headers.length) {
+    proceedOrReviewAdd(chatId, state);
+    return;
+  }
+
+  // 1. Auto-flag formula positions from the row template and mark as formula
+  if (state.lastRowValues && isCellFormula(state.fileId, state.sheetName, state.lastRowIndex, idx + 1)) {
+    state.formData[headers[idx]] = '🧬 (Calculated Formula)';
+    state.currentFieldIndex = idx + 1;
+    sendFieldPrompt(chatId, state);
+    return;
+  }
+
+  // 2. Skip columns that are horizontally merged into the previous column (e.g., Column E trailing Column D)
+  if (state.lastRowIndex > 1) {
+    try {
+      const sheet = _getSheet(state.fileId, state.sheetName);
+      const templateCell = sheet.getRange(state.lastRowIndex, idx + 1);
+      if (templateCell.isPartOfMerge()) {
+        const topLeftCell = templateCell.getMergedRanges()[0].getCell(1, 1);
+        if (topLeftCell.getColumn() < (idx + 1)) {
+          state.formData[headers[idx]] = ''; // Shared data cell
+          state.currentFieldIndex = idx + 1;
+          sendFieldPrompt(chatId, state);
+          return;
+        }
+      }
+    } catch(e) {
+      console.error("Merge visual validation skipped: " + e);
+    }
+  }
+
+  const fieldName = headers[idx];
   const keyboardRows = [];
   
   let lastVal = '';
@@ -352,7 +407,6 @@ function handleEditPage(chatId, page) {
 function _loadAndRenderRowList(chatId, state) {
   let allRows;
   try {
-    // Подгружаем до 1000 последних строк, чтобы бот видел всю таблицу
     allRows = actionGetLastRows(state.fileId, state.sheetName, 1000);
   } catch (e) {
     sendMessage(chatId, '⚠️ ' + e.message);
@@ -459,17 +513,58 @@ function handleEditRowSelect(chatId, rowIndex) {
 function renderRowView(chatId, state) {
   const headers = state.headers || [];
   const values = state.rowValues || [];
+  
+  const keyboardRows = [];
+  let contentLines = [];
 
-  const contentText = 'Row ' + state.rowIndex + ' current data:\n\n' + headers.map((h, i) => '<b>' + h + '</b>: ' + formatPreview(values[i], 100)).join('\n');
+  let sheet = null;
+  try {
+    sheet = _getSheet(state.fileId, state.sheetName);
+  } catch(e) {
+    console.error("Could not open sheet for edit validation: " + e);
+  }
+
+  headers.forEach((h, i) => {
+    const colIndex = i + 1;
+    let shouldSkip = false;
+
+    // Filter layout structures so that trailing merged cells don't render options
+    if (sheet && state.rowIndex) {
+      try {
+        const cell = sheet.getRange(state.rowIndex, colIndex);
+        if (cell.isPartOfMerge()) {
+          const topLeftCell = cell.getMergedRanges()[0].getCell(1, 1);
+          if (topLeftCell.getColumn() < colIndex) {
+            shouldSkip = true;
+          }
+        }
+      } catch(e) {
+        console.error("Error validating cell merge during edit render: " + e);
+      }
+    }
+
+    if (!shouldSkip) {
+      contentLines.push('<b>' + h + '</b>: ' + formatPreview(values[i], 100));
+      keyboardRows.push([{ label: '✏️ ' + formatPreview(h, 30), value: 'editfield:' + colIndex }]);
+    }
+  });
+
+  const contentText = 'Row ' + state.rowIndex + ' current data:\n\n' + contentLines.join('\n');
   sendMessage(chatId, contentText);
 
-  const keyboardRows = headers.map((h, i) => [{ label: '✏️ ' + formatPreview(h, 30), value: 'editfield:' + (i + 1) }]);
   keyboardRows.push([{ label: '⬅️ Back', value: 'back:editrow' }]);
   _renderMenu(chatId, state, 'Select a field to modify:', keyboardRows);
 }
 
 function handleEditFieldSelect(chatId, colIndex) {
   const state = getState(chatId);
+  
+  if (isCellFormula(state.fileId, state.sheetName, state.rowIndex, colIndex)) {
+    sendMessage(chatId, '⚠️ <b>Cell contains a formula and is locked for inline editing.</b>');
+    renderRowView(chatId, state);
+    return;
+  }
+
   const headers = state.headers || [];
   const currentValue = state.rowValues[colIndex - 1] || '';
   const fieldName = headers[colIndex - 1] || 'Column ' + colIndex;
@@ -504,10 +599,17 @@ function handleEditFieldInput(chatId, state, text) {
 
 function handleBack(chatId, target) {
   const state = getState(chatId);
-  if (target === 'folders') showMainMenu(chatId);
-  else if (target === 'files') renderFileList(chatId, state);
-  else if (target === 'sheets') renderSheetList(chatId, state, null);
-  else if (target === 'sheetmenu') showSheetMenu(chatId, state);
-  else if (target === 'editrow') renderRowList(chatId, state);
-  else showMainMenu(chatId);
+  if (target === 'folders') {
+    showMainMenu(chatId);
+  } else if (target === 'files') {
+    renderFileList(chatId, state);
+  } else if (target === 'sheets') {
+    renderSheetList(chatId, state, null);
+  } else if (target === 'sheetmenu') {
+    showSheetMenu(chatId, state);
+  } else if (target === 'editrow') {
+    renderRowList(chatId, state);
+  } else {
+    showMainMenu(chatId);
+  }
 }
