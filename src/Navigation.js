@@ -3,6 +3,14 @@
  * Bot screens, keyboard generation, and all conversation-flow handlers.
  * Must not call DriveApp / SpreadsheetApp directly — all data access goes
  * through SheetActions.js → DataAccess.js.
+ *
+ * HTML escaping: every sendMessage / _renderForceReply call uses
+ * parse_mode: 'HTML'. Any dynamic content (sheet/file/folder names, cell
+ * values, error messages) MUST go through escapeHtml_() before being
+ * concatenated into message text. Literal tags we add ourselves (<b>, <i>,
+ * <code>, <a>) are written around the escaped value, never through it.
+ * Reply-keyboard BUTTON LABELS are plain strings, not HTML-parsed, so they
+ * are not escaped.
  */
 
 // ---------------------------------------------------------------------------
@@ -34,6 +42,7 @@ function _renderMenu(chatId, state, text, keyboardRows) {
 /**
  * Sends a ForceReply prompt so the user's next message is threaded as a
  * reply. Used before free-text input steps (field values, row numbers).
+ * `text` must already have any dynamic segments escaped by the caller.
  */
 function _renderForceReply(chatId, text, placeholderText) {
   return _callTelegram_('sendMessage', {
@@ -48,10 +57,79 @@ function _renderForceReply(chatId, text, placeholderText) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the display label for a configured folder: CONFIG.FOLDER_LABELS
+ * entry if present, otherwise the live Drive folder name (falls back to a
+ * generic "Folder N" if that lookup fails too).
+ * @param {string} folderId
+ * @param {number} folderIndex
+ * @returns {string}
+ */
+function _resolveFolderLabel_(folderId, folderIndex) {
+  const configured = CONFIG.FOLDER_LABELS[folderIndex];
+  if (configured) return configured;
+  try {
+    return actionGetFolderName(folderId);
+  } catch (e) {
+    return 'Folder ' + (folderIndex + 1);
+  }
+}
+
+/**
+ * True when the field at `idx` is a formula cell that gets auto-filled
+ * (never prompted to the user) during the add-row flow.
+ * @param {Object} state
+ * @param {number} idx  0-based header index
+ * @returns {boolean}
+ */
+function _isFormulaField_(state, idx) {
+  return !!state.lastRowValues &&
+    isCellFormula(state.fileId, state.sheetName, state.lastRowIndex, idx + 1);
+}
+
+/**
+ * True when the field at `idx` is a trailing merged cell that gets skipped
+ * (never prompted to the user) during the add-row flow.
+ * @param {Object} state
+ * @param {number} idx  0-based header index
+ * @returns {boolean}
+ */
+function _isMergeShadowField_(state, idx) {
+  return !!state.lastRowValues && state.lastRowIndex > 1 &&
+    isCellTrailingMerge(state.fileId, state.sheetName, state.lastRowIndex, idx + 1);
+}
+
+/** True when the field at `idx` is auto-filled and therefore never prompted. */
+function _isAutoFillField_(state, idx) {
+  return _isFormulaField_(state, idx) || _isMergeShadowField_(state, idx);
+}
+
+/**
+ * Walks backward from `fromIdx` (exclusive) to find the nearest field that
+ * was actually prompted to the user (i.e. not auto-filled). Used by the
+ * "Previous" button so it lands on a real field instead of one that would
+ * immediately auto-skip forward again.
+ *
+ * @param {Object} state
+ * @param {number} fromIdx
+ * @returns {number} the previous prompt index, or -1 if there isn't one
+ */
+function _findPrevPromptIndex_(state, fromIdx) {
+  for (let i = fromIdx - 1; i >= 0; i--) {
+    if (!_isAutoFillField_(state, i)) return i;
+  }
+  return -1;
+}
+
+// ---------------------------------------------------------------------------
 // Main menu
 // ---------------------------------------------------------------------------
 
 function showMainMenu(chatId) {
+  const icons   = getIcons_();
   const state   = { step: 'main_menu' };
   const options = [];
 
@@ -64,17 +142,13 @@ function showMainMenu(chatId) {
   // Favourite documents (max MAX_FAV_DOCS)
   const favDocs = getFavDocs(chatId);
   favDocs.forEach((doc, idx) => {
-    options.push({ label: '⭐ ' + formatPreview(doc.fileName, 35), value: 'openfavdoc:' + idx });
+    options.push({ label: icons.FAV + ' ' + formatPreview(doc.fileName, 35), value: 'openfavdoc:' + idx });
   });
 
   // Folder list
   CONFIG.FOLDER_IDS.forEach((id, idx) => {
-    let label = CONFIG.FOLDER_LABELS[idx];
-    if (!label) {
-      try   { label = actionGetFolderName(id); }
-      catch (e) { label = 'Folder ' + (idx + 1); }
-    }
-    if (!label.startsWith('📁')) label = '📁 ' + label;
+    let label = _resolveFolderLabel_(id, idx);
+    if (!label.startsWith(icons.FOLDER)) label = icons.FOLDER + ' ' + label;
     options.push({ label: label, value: 'folder:' + idx });
   });
 
@@ -92,7 +166,7 @@ function handleContinue(chatId) {
 
   let sheets;
   try   { sheets = actionListSheets(lastPath.fileId); }
-  catch (e) { sendMessage(chatId, '⚠️ ' + e.message); showMainMenu(chatId); return; }
+  catch (e) { sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message)); showMainMenu(chatId); return; }
 
   const state = {
     step:        'sheet_menu',
@@ -115,11 +189,7 @@ function handleFolderSelect(chatId, folderIndex) {
   const folderId = CONFIG.FOLDER_IDS[folderIndex];
   if (!folderId) { showMainMenu(chatId); return; }
 
-  let folderName = CONFIG.FOLDER_LABELS[folderIndex];
-  if (!folderName) {
-    try   { folderName = actionGetFolderName(folderId); }
-    catch (e) { folderName = 'Folder ' + (folderIndex + 1); }
-  }
+  const folderName = _resolveFolderLabel_(folderId, folderIndex);
 
   const state = { step: 'file_list', folderIndex: folderIndex, folderId: folderId, folderName: folderName, filePage: 0 };
   renderFileList(chatId, state);
@@ -136,15 +206,16 @@ function handleFilesRefresh(chatId) {
   try {
     clearFolderCache(state.folderId);
     actionListSpreadsheets(state.folderId, true);
-  } catch (e) { sendMessage(chatId, '⚠️ ' + e.message); showMainMenu(chatId); return; }
+  } catch (e) { sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message)); showMainMenu(chatId); return; }
   state.filePage = 0;
   renderFileList(chatId, state);
 }
 
 function renderFileList(chatId, state) {
+  const icons = getIcons_();
   let files = [];
   try   { files = actionListSpreadsheets(state.folderId); }
-  catch (e) { sendMessage(chatId, '⚠️ Could not read files.'); return; }
+  catch (e) { sendMessage(chatId, icons.WARNING + ' Could not read files.'); return; }
 
   const perPage   = CONFIG.FILES_PER_PAGE || 10;
   const page      = state.filePage || 0;
@@ -159,17 +230,17 @@ function renderFileList(chatId, state) {
   // Value format: "file:<fileId>:<fileName>"  — Drive IDs never contain ":",
   // and fileName is everything after the second ":" (joined with ":" if needed).
   const keyboardRows = pageFiles.map((f) => {
-    const icon = favDocIds.has(f.id) ? '⭐ ' : '📄 ';
+    const icon = favDocIds.has(f.id) ? icons.FAV + ' ' : icons.FILE + ' ';
     return [{ label: icon + f.name, value: 'file:' + f.id + ':' + f.name }];
   });
 
   const navRow = [];
-  if (page > 0)                      navRow.push({ label: '◀️ Prev', value: 'page:' + (page - 1) });
-  if (start + perPage < files.length) navRow.push({ label: '▶️ Next', value: 'page:' + (page + 1) });
+  if (page > 0)                      navRow.push({ label: icons.PREV_PAGE + ' Prev', value: 'page:' + (page - 1) });
+  if (start + perPage < files.length) navRow.push({ label: icons.NEXT_PAGE + ' Next', value: 'page:' + (page + 1) });
   if (navRow.length) keyboardRows.push(navRow);
 
-  keyboardRows.push([{ label: '🔄 Refresh', value: 'refresh' }, { label: '⬅️ Back', value: 'back:folders' }]);
-  _renderMenu(chatId, state, 'Spreadsheets in "' + state.folderName + '":', keyboardRows);
+  keyboardRows.push([{ label: icons.REFRESH + ' Refresh', value: 'refresh' }, { label: icons.BACK + ' Back', value: 'back:folders' }]);
+  _renderMenu(chatId, state, 'Spreadsheets in "' + escapeHtml_(state.folderName) + '":', keyboardRows);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +256,7 @@ function handleFileSelect(chatId, fileId, fileName) {
 
   let sheets;
   try   { sheets = actionListSheets(fileId); }
-  catch (e) { sendMessage(chatId, '⚠️ ' + e.message); renderFileList(chatId, state); return; }
+  catch (e) { sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message)); renderFileList(chatId, state); return; }
 
   state.step     = 'sheet_list';
   state.fileId   = fileId;
@@ -195,6 +266,7 @@ function handleFileSelect(chatId, fileId, fileName) {
 }
 
 function renderSheetList(chatId, state, sheets) {
+  const icons = getIcons_();
   if (!sheets) {
     try { sheets = actionListSheets(state.fileId); } catch (e) { sheets = []; }
   }
@@ -209,17 +281,17 @@ function renderSheetList(chatId, state, sheets) {
   const ordered  = favOrder.concat(rest);
 
   const keyboardRows = ordered.map((name) => {
-    const icon    = favSet.has(name) ? '⭐ ' : '📑 ';
+    const icon    = favSet.has(name) ? icons.FAV + ' ' : icons.SHEET + ' ';
     const origIdx = sheets.indexOf(name);
     return [{ label: icon + name, value: 'sheet:' + origIdx }];
   });
 
   // Fav Doc toggle lives here — document is chosen, tab is not yet selected,
   // so this is the correct level for document-level favouriting.
-  const docFavLabel = isFavDoc(chatId, state.fileId) ? '★ Unfav Doc' : '⭐ Fav Doc';
+  const docFavLabel = isFavDoc(chatId, state.fileId) ? icons.UNFAV + ' Unfav Doc' : icons.FAV + ' Fav Doc';
   keyboardRows.push([{ label: docFavLabel, value: 'favdoc' }]);
-  keyboardRows.push([{ label: '⬅️ Back', value: 'back:files' }]);
-  _renderMenu(chatId, state, 'Tabs in "' + state.fileName + '":', keyboardRows);
+  keyboardRows.push([{ label: icons.BACK + ' Back', value: 'back:files' }]);
+  _renderMenu(chatId, state, 'Tabs in "' + escapeHtml_(state.fileName) + '":', keyboardRows);
 }
 
 function handleSheetSelect(chatId, sheetIndex) {
@@ -248,22 +320,23 @@ function handleSheetSelect(chatId, sheetIndex) {
 // ---------------------------------------------------------------------------
 
 function showSheetMenu(chatId, state) {
+  const icons = getIcons_();
   state.step = 'sheet_menu';
 
-  const tabFavLabel = isFavSheet(chatId, state.fileId, state.sheetName) ? '★ Unfav Tab' : '⭐ Fav Tab';
+  const tabFavLabel = isFavSheet(chatId, state.fileId, state.sheetName) ? icons.UNFAV + ' Unfav Tab' : icons.FAV + ' Fav Tab';
 
   const keyboardRows = [
-    [{ label: '➕ Add row',   value: 'add'     }],
-    [{ label: '✏️ Edit row',  value: 'edit'    }],
-    [{ label: '🔍 Preview',   value: 'preview' }],
+    [{ label: icons.ADD + ' Add row',   value: 'add'     }],
+    [{ label: icons.EDIT + ' Edit row',  value: 'edit'    }],
+    [{ label: icons.PREVIEW + ' Preview',   value: 'preview' }],
     [{ label: tabFavLabel,    value: 'favtab'  }],
-    [{ label: '⬅️ Back',     value: 'back:sheets' }],
+    [{ label: icons.BACK + ' Back',     value: 'back:sheets' }],
   ];
 
   _renderMenu(
     chatId,
     state,
-    '"' + state.folderName + ' / ' + state.fileName + ' / ' + state.sheetName + '"\nWhat do you want to do?',
+    '"' + escapeHtml_(state.folderName) + ' / ' + escapeHtml_(state.fileName) + ' / ' + escapeHtml_(state.sheetName) + '"\nWhat do you want to do?',
     keyboardRows
   );
 }
@@ -274,10 +347,11 @@ function showSheetMenu(chatId, state) {
 
 /** Toggles the current document in the user's favourite-documents list. */
 function handleToggleFavDoc(chatId) {
+  const icons = getIcons_();
   const state = getState(chatId);
   if (isFavDoc(chatId, state.fileId)) {
     removeFavDoc(chatId, state.fileId);
-    sendMessage(chatId, '★ Removed "' + state.fileName + '" from favourite docs.');
+    sendMessage(chatId, icons.UNFAV + ' Removed "' + escapeHtml_(state.fileName) + '" from favourite docs.');
   } else {
     const added = addFavDoc(chatId, {
       fileId:      state.fileId,
@@ -287,9 +361,9 @@ function handleToggleFavDoc(chatId) {
       folderName:  state.folderName,
     });
     if (added) {
-      sendMessage(chatId, '⭐ Added "' + state.fileName + '" to favourite docs.');
+      sendMessage(chatId, icons.FAV + ' Added "' + escapeHtml_(state.fileName) + '" to favourite docs.');
     } else {
-      sendMessage(chatId, '⚠️ Favourite docs list is full (max ' + MAX_FAV_DOCS + '). Remove one first.');
+      sendMessage(chatId, icons.WARNING + ' Favourite docs list is full (max ' + MAX_FAV_DOCS + '). Remove one first.');
     }
   }
   // Return to the sheet list — that is where the Fav Doc button lives.
@@ -298,16 +372,17 @@ function handleToggleFavDoc(chatId) {
 
 /** Toggles the current tab in the user's favourite-sheets list for this document. */
 function handleToggleFavTab(chatId) {
+  const icons = getIcons_();
   const state = getState(chatId);
   if (isFavSheet(chatId, state.fileId, state.sheetName)) {
     removeFavSheet(chatId, state.fileId, state.sheetName);
-    sendMessage(chatId, '★ Removed tab "' + state.sheetName + '" from favourites.');
+    sendMessage(chatId, icons.UNFAV + ' Removed tab "' + escapeHtml_(state.sheetName) + '" from favourites.');
   } else {
     const added = addFavSheet(chatId, state.fileId, state.sheetName);
     if (added) {
-      sendMessage(chatId, '⭐ Tab "' + state.sheetName + '" added to favourites.');
+      sendMessage(chatId, icons.FAV + ' Tab "' + escapeHtml_(state.sheetName) + '" added to favourites.');
     } else {
-      sendMessage(chatId, '⚠️ Favourite tabs list is full (max ' + MAX_FAV_SHEETS + '). Remove one first.');
+      sendMessage(chatId, icons.WARNING + ' Favourite tabs list is full (max ' + MAX_FAV_SHEETS + '). Remove one first.');
     }
   }
   showSheetMenu(chatId, state);
@@ -324,7 +399,7 @@ function handleOpenFavDoc(chatId, favIndex) {
 
   let sheets;
   try   { sheets = actionListSheets(doc.fileId); }
-  catch (e) { sendMessage(chatId, '⚠️ Could not open document: ' + e.message); showMainMenu(chatId); return; }
+  catch (e) { sendMessage(chatId, getIcons_().WARNING + ' Could not open document: ' + escapeHtml_(e.message)); showMainMenu(chatId); return; }
 
   const state = {
     step:        'sheet_list',
@@ -350,7 +425,7 @@ function handleAddStart(chatId) {
     headers  = actionGetHeaders(state.fileId, state.sheetName);
     lastRows = actionGetLastRows(state.fileId, state.sheetName, 1);
   } catch (e) {
-    sendMessage(chatId, '⚠️ ' + e.message);
+    sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message));
     showSheetMenu(chatId, state);
     return;
   }
@@ -365,9 +440,8 @@ function handleAddStart(chatId) {
   sendFieldPrompt(chatId, state);
 }
 
-const FORMULA_PLACEHOLDER = '🧬 (Calculated Formula)';
-
 function sendFieldPrompt(chatId, state) {
+  const icons   = getIcons_();
   const headers = state.headers || [];
   const idx     = state.currentFieldIndex || 0;
 
@@ -377,8 +451,8 @@ function sendFieldPrompt(chatId, state) {
   }
 
   // Auto-fill formula cells — mark as placeholder and advance.
-  if (state.lastRowValues && isCellFormula(state.fileId, state.sheetName, state.lastRowIndex, idx + 1)) {
-    state.formData[headers[idx]] = FORMULA_PLACEHOLDER;
+  if (_isFormulaField_(state, idx)) {
+    state.formData[headers[idx]] = formulaPlaceholderText_();
     state.currentFieldIndex      = idx + 1;
     sendFieldPrompt(chatId, state);
     return;
@@ -386,7 +460,7 @@ function sendFieldPrompt(chatId, state) {
 
   // Skip trailing merged cells (they share data with the cell to their left).
   // Uses DataAccess.isCellTrailingMerge — no direct _getSheet_ call here.
-  if (state.lastRowIndex > 1 && isCellTrailingMerge(state.fileId, state.sheetName, state.lastRowIndex, idx + 1)) {
+  if (_isMergeShadowField_(state, idx)) {
     state.formData[headers[idx]] = '';
     state.currentFieldIndex      = idx + 1;
     sendFieldPrompt(chatId, state);
@@ -402,23 +476,51 @@ function sendFieldPrompt(chatId, state) {
 
   if (lastVal.trim().length > 0) {
     keyboardRows.push([
-      { label: '🔘 Use: ' + formatPreview(lastVal, 15), value: 'use_last_direct'     },
-      { label: '✏️ Edit Last Value',                     value: 'use_last_edit_request' },
+      { label: icons.USE_LAST + ' Use: ' + formatPreview(lastVal, 15), value: 'use_last_direct'     },
+      { label: icons.EDIT + ' Edit Last Value',                        value: 'use_last_edit_request' },
     ]);
   }
 
   keyboardRows.push([
-    { label: '🔲 Leave empty', value: 'leave_empty' },
-    { label: '🏁 Finish row',  value: 'finish_row'  },
+    { label: icons.LEAVE_EMPTY + ' Leave empty', value: 'leave_empty' },
+    { label: icons.FINISH + ' Finish row',       value: 'finish_row'  },
   ]);
-  keyboardRows.push([{ label: '❌ Cancel', value: 'cancel_add' }]);
+
+  // "Previous" only appears once there is an earlier prompted field to
+  // return to — never on the very first field of the form.
+  const prevIdx  = _findPrevPromptIndex_(state, idx);
+  const lastRow  = [{ label: icons.CANCEL + ' Cancel', value: 'cancel_add' }];
+  if (prevIdx >= 0) {
+    lastRow.unshift({ label: icons.PREV_FIELD + ' Previous', value: 'prev_field' });
+  }
+  keyboardRows.push(lastRow);
 
   _renderMenu(
     chatId,
     state,
-    'Adding to <b>' + state.sheetName + '</b>.\n\nEnter value for: <b>' + fieldName + '</b>',
+    'Adding to <b>' + escapeHtml_(state.sheetName) + '</b>.\n\nEnter value for: <b>' + escapeHtml_(fieldName) + '</b>',
     keyboardRows
   );
+}
+
+/**
+ * Returns to the nearest previously-prompted field (skipping over any
+ * formula/merge fields that were auto-filled, never prompted). The field
+ * we're returning to is cleared so the user re-enters it from scratch.
+ * No-ops (re-renders the current prompt) if there is nothing to go back to.
+ */
+function handlePrevField(chatId) {
+  const state   = getState(chatId);
+  const headers = state.headers || [];
+  const idx     = state.currentFieldIndex || 0;
+  const prevIdx = _findPrevPromptIndex_(state, idx);
+
+  if (prevIdx < 0) { sendFieldPrompt(chatId, state); return; }
+
+  delete state.formData[headers[prevIdx]];
+  state.currentFieldIndex = prevIdx;
+  setState(chatId, state);
+  sendFieldPrompt(chatId, state);
 }
 
 function handleUseLastEditRequest(chatId) {
@@ -433,11 +535,12 @@ function handleUseLastEditRequest(chatId) {
 
   _renderMenu(chatId, state, 'Preparing editor…', []);
 
+  const icons = getIcons_();
   _renderForceReply(
     chatId,
-    '✏️ Editing value for: <b>' + fieldName + '</b>\n\n' +
-    '👉 <b>Tap the code block to copy</b>, paste into chat, edit, then send:\n\n' +
-    '<code>' + lastVal + '</code>',
+    icons.EDIT + ' Editing value for: <b>' + escapeHtml_(fieldName) + '</b>\n\n' +
+    icons.POINTER + ' <b>Tap the code block to copy</b>, paste into chat, edit, then send:\n\n' +
+    '<code>' + escapeHtml_(lastVal) + '</code>',
     'Paste and edit value…'
   );
 }
@@ -463,20 +566,21 @@ function proceedOrReviewAdd(chatId, state) {
   }
 
   const preview = headers
-    .map(h => '<b>' + h + '</b>: ' + (state.formData[h] || '(empty)'))
+    .map(h => '<b>' + escapeHtml_(h) + '</b>: ' + escapeHtml_(state.formData[h] || '(empty)'))
     .join('\n');
   sendMessage(chatId, 'Review new row:\n\n' + preview);
 
+  const icons = getIcons_();
   _renderMenu(chatId, state, 'Save this row?', [
-    [{ label: '✅ Save', value: 'save' }, { label: '❌ Cancel', value: 'cancel_add' }],
+    [{ label: icons.SAVE + ' Save', value: 'save' }, { label: icons.CANCEL + ' Cancel', value: 'cancel_add' }],
   ]);
 }
 
 function handleSaveAdd(chatId) {
   const state = getState(chatId);
   try   { actionAddRow(state.fileId, state.sheetName, state.formData, state.headers); }
-  catch (e) { sendMessage(chatId, '⚠️ ' + e.message); showSheetMenu(chatId, state); return; }
-  sendMessage(chatId, '✅ Row saved successfully.');
+  catch (e) { sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message)); showSheetMenu(chatId, state); return; }
+  sendMessage(chatId, getIcons_().SAVE + ' Row saved successfully.');
   showSheetMenu(chatId, state);
 }
 
@@ -509,7 +613,7 @@ function handleEditPage(chatId, page) {
 function _loadAndRenderRowList(chatId, state) {
   let allRows;
   try   { allRows = actionGetLastRows(state.fileId, state.sheetName, 1000); }
-  catch (e) { sendMessage(chatId, '⚠️ ' + e.message); showSheetMenu(chatId, state); return; }
+  catch (e) { sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message)); showSheetMenu(chatId, state); return; }
   // Store only page index and row count hint; the full rowList is passed
   // as a parameter rather than through persisted state.
   state.rowCount = allRows.length;
@@ -517,8 +621,9 @@ function _loadAndRenderRowList(chatId, state) {
 }
 
 function renderRowList(chatId, state, rows) {
+  const icons = getIcons_();
   if (!rows || !rows.length) {
-    _renderMenu(chatId, state, 'No data rows found.', [[{ label: '⬅️ Back', value: 'back:sheetmenu' }]]);
+    _renderMenu(chatId, state, 'No data rows found.', [[{ label: icons.BACK + ' Back', value: 'back:sheetmenu' }]]);
     return;
   }
 
@@ -528,7 +633,7 @@ function renderRowList(chatId, state, rows) {
   const pageRows = rows.slice(start, start + perPage);
 
   const lines = pageRows.map(r =>
-    '<b>Row ' + r.rowIndex + '</b>: ' + r.values.slice(0, 3).map(v => formatPreview(v, 20)).join(' | ')
+    '<b>Row ' + r.rowIndex + '</b>: ' + r.values.slice(0, 3).map(v => escapeHtml_(formatPreview(v, 20))).join(' | ')
   );
   let contentText = 'Recent rows (page ' + (page + 1) + '):\n\n' + lines.join('\n');
 
@@ -537,7 +642,7 @@ function renderRowList(chatId, state, rows) {
     const rMin = Math.min.apply(null, pageRows.map(r => r.rowIndex));
     const rMax = Math.max.apply(null, pageRows.map(r => r.rowIndex));
     const url  = buildSheetRangeUrl(state.fileId, gid, rMin, rMax, pageRows[0].values.length);
-    contentText += '\n\n🔗 <a href="' + url + '">Open in Google Sheets</a>';
+    contentText += '\n\n' + icons.LINK + ' <a href="' + url + '">Open in Google Sheets</a>';
   } catch (e) { /* link is optional */ }
 
   sendMessage(chatId, contentText);
@@ -545,12 +650,12 @@ function renderRowList(chatId, state, rows) {
   const keyboardRows = pageRows.map(r => [{ label: 'Row ' + r.rowIndex, value: 'editrow:' + r.rowIndex }]);
 
   const navRow = [];
-  if (page > 0)                       navRow.push({ label: '◀️ Prev Rows', value: 'editpage:' + (page - 1) });
-  if (start + perPage < rows.length)   navRow.push({ label: '▶️ Next Rows', value: 'editpage:' + (page + 1) });
+  if (page > 0)                       navRow.push({ label: icons.PREV_PAGE + ' Prev Rows', value: 'editpage:' + (page - 1) });
+  if (start + perPage < rows.length)   navRow.push({ label: icons.NEXT_PAGE + ' Next Rows', value: 'editpage:' + (page + 1) });
   if (navRow.length) keyboardRows.push(navRow);
 
-  keyboardRows.push([{ label: '🔢 Enter row number', value: 'edit_manual_request' }]);
-  keyboardRows.push([{ label: '⬅️ Back',              value: 'back:sheetmenu'      }]);
+  keyboardRows.push([{ label: icons.ROW_NUMBER + ' Enter row number', value: 'edit_manual_request' }]);
+  keyboardRows.push([{ label: icons.BACK + ' Back',              value: 'back:sheetmenu'      }]);
   _renderMenu(chatId, state, 'Tap a row to edit:', keyboardRows);
 }
 
@@ -560,13 +665,13 @@ function handleEditRowManualRequest(chatId) {
   setState(chatId, state);
 
   _renderMenu(chatId, state, 'Preparing manual input…', []);
-  _renderForceReply(chatId, '🔢 <b>Enter the row number</b> to edit:', 'e.g. 15');
+  _renderForceReply(chatId, getIcons_().ROW_NUMBER + ' <b>Enter the row number</b> to edit:', 'e.g. 15');
 }
 
 function handleEditRowManualInput(chatId, state, text) {
   const rowIndex = parseInt(text, 10);
   if (isNaN(rowIndex) || rowIndex < 1) {
-    sendMessage(chatId, '⚠️ Please enter a valid positive row number.');
+    sendMessage(chatId, getIcons_().WARNING + ' Please enter a valid positive row number.');
     _loadAndRenderRowList(chatId, state);
     return;
   }
@@ -583,7 +688,7 @@ function handleEditRowManualInput(chatId, state, text) {
     setState(chatId, state);
     renderRowView(chatId, state);
   } catch (e) {
-    sendMessage(chatId, '⚠️ No row with that number.');
+    sendMessage(chatId, getIcons_().WARNING + ' No row with that number.');
     _loadAndRenderRowList(chatId, state);
   }
 }
@@ -595,7 +700,7 @@ function handleEditRowSelect(chatId, rowIndex) {
     values  = actionGetRowValues(state.fileId, state.sheetName, rowIndex);
     headers = actionGetHeaders(state.fileId, state.sheetName);
   } catch (e) {
-    sendMessage(chatId, '⚠️ ' + e.message);
+    sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message));
     _loadAndRenderRowList(chatId, state);
     return;
   }
@@ -607,10 +712,11 @@ function handleEditRowSelect(chatId, rowIndex) {
 }
 
 function renderRowView(chatId, state) {
-  const headers      = state.headers || [];
-  const values       = state.rowValues || [];
-  const keyboardRows = [];
-  const contentLines = [];
+  const icons         = getIcons_();
+  const headers       = state.headers || [];
+  const values        = state.rowValues || [];
+  const keyboardRows  = [];
+  const contentLines  = [];
 
   headers.forEach((h, i) => {
     const colIndex = i + 1;
@@ -620,12 +726,12 @@ function renderRowView(chatId, state) {
       return;
     }
 
-    contentLines.push('<b>' + h + '</b>: ' + formatPreview(values[i], 100));
-    keyboardRows.push([{ label: '✏️ ' + formatPreview(h, 30), value: 'editfield:' + colIndex }]);
+    contentLines.push('<b>' + escapeHtml_(h) + '</b>: ' + escapeHtml_(formatPreview(values[i], 100)));
+    keyboardRows.push([{ label: icons.EDIT + ' ' + formatPreview(h, 30), value: 'editfield:' + colIndex }]);
   });
 
   sendMessage(chatId, 'Row ' + state.rowIndex + ' current data:\n\n' + contentLines.join('\n'));
-  keyboardRows.push([{ label: '⬅️ Back', value: 'back:editrow' }]);
+  keyboardRows.push([{ label: icons.BACK + ' Back', value: 'back:editrow' }]);
   _renderMenu(chatId, state, 'Select a field to edit:', keyboardRows);
 }
 
@@ -633,7 +739,7 @@ function handleEditFieldSelect(chatId, colIndex) {
   const state = getState(chatId);
 
   if (isCellFormula(state.fileId, state.sheetName, state.rowIndex, colIndex)) {
-    sendMessage(chatId, '⚠️ <b>This cell contains a formula and cannot be edited inline.</b>');
+    sendMessage(chatId, getIcons_().WARNING + ' <b>This cell contains a formula and cannot be edited inline.</b>');
     renderRowView(chatId, state);
     return;
   }
@@ -646,12 +752,12 @@ function handleEditFieldSelect(chatId, colIndex) {
   state.colIndex = colIndex;
   setState(chatId, state);
 
-  _renderMenu(chatId, state, 'Opening editor for: ' + fieldName, []);
+  _renderMenu(chatId, state, 'Opening editor for: ' + escapeHtml_(fieldName), []);
 
   _renderForceReply(
     chatId,
-    '✏️ Editing <b>' + fieldName + '</b> in row ' + state.rowIndex + '.\n\n' +
-    'Current value — tap to copy, then reply with the new value:\n<code>' + currentValue + '</code>',
+    getIcons_().EDIT + ' Editing <b>' + escapeHtml_(fieldName) + '</b> in row ' + state.rowIndex + '.\n\n' +
+    'Current value — tap to copy, then reply with the new value:\n<code>' + escapeHtml_(currentValue) + '</code>',
     'Type new value…'
   );
 }
@@ -661,12 +767,12 @@ function handleEditFieldInput(chatId, state, text) {
     actionUpdateCell(state.fileId, state.sheetName, state.rowIndex, state.colIndex, text);
     state.rowValues = actionGetRowValues(state.fileId, state.sheetName, state.rowIndex);
   } catch (e) {
-    sendMessage(chatId, '⚠️ ' + e.message);
+    sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message));
     return;
   }
   delete state.colIndex;
   state.step = 'edit_row_view';
-  sendMessage(chatId, '✅ Cell updated.');
+  sendMessage(chatId, getIcons_().SAVE + ' Cell updated.');
   renderRowView(chatId, state);
 }
 

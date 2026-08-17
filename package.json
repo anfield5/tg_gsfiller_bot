@@ -1,0 +1,12 @@
+{
+  "name": "tg_gsfiller_bot",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Telegram to Google Sheets navigator bot (Google Apps Script).",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

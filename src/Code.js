@@ -29,7 +29,7 @@ function handleMessage(message) {
   // never committed to the repository.
   const adminIds = PropertiesService.getScriptProperties().getProperty('ADMIN_IDS') || '';
   if (!adminIds.split(',').map(s => s.trim()).includes(chatId)) {
-    sendMessage(message.chat.id, '🚫 Access denied. You are not authorised to use this bot.');
+    sendMessage(message.chat.id, getIcons_().DENIED + ' Access denied. You are not authorised to use this bot.');
     return;
   }
 
@@ -51,9 +51,10 @@ function handleMessage(message) {
 
   // User is entering a field value for a new row.
   if (state.step === 'add_filling') {
+    const useLastPrefix = getIcons_().USE_LAST + ' Use:';
     const options = state.currentOptions || [];
     const matched = options.find(
-      o => o.label === text || (o.label.startsWith('🔘 Use:') && text.startsWith('🔘 Use:'))
+      o => o.label === text || (o.label.startsWith(useLastPrefix) && text.startsWith(useLastPrefix))
     );
     if (matched) {
       routeAction(chatId, matched.value);
@@ -96,23 +97,27 @@ function routeAction(chatId, value) {
   const action = parts[0];
 
   switch (action) {
-    case 'continue':          handleContinue(chatId);                    break;
-    case 'folder':            handleFolderSelect(chatId, Number(parts[1]));   break;
-    case 'page':              handleFilesPage(chatId, Number(parts[1]));       break;
-    case 'refresh':           handleFilesRefresh(chatId);                break;
+    case 'continue': handleContinue(chatId); break;
+    case 'folder':   handleFolderSelect(chatId, Number(parts[1])); break;
+    case 'page':     handleFilesPage(chatId, Number(parts[1])); break;
+    case 'refresh':  handleFilesRefresh(chatId); break;
+
     // Value format: "file:<fileId>:<fileName>" — fileId has no ":", fileName is
     // everything after the second ":" reassembled (handles ":" in sheet names).
-    case 'file':              handleFileSelect(chatId, parts[1], parts.slice(2).join(':')); break;
-    case 'sheet':             handleSheetSelect(chatId, Number(parts[1]));     break;
-    case 'add':               handleAddStart(chatId);                    break;
-    case 'edit':              handleEditStart(chatId);                   break;
-    case 'editpage':          handleEditPage(chatId, Number(parts[1]));        break;
-    case 'edit_manual_request': handleEditRowManualRequest(chatId);      break;
-    case 'editrow':           handleEditRowSelect(chatId, Number(parts[1]));   break;
-    case 'editfield':         handleEditFieldSelect(chatId, Number(parts[1])); break;
-    case 'save':              handleSaveAdd(chatId);                     break;
-    case 'cancel_add':        handleCancelAdd(chatId);                   break;
-    case 'back':              handleBack(chatId, parts[1]);              break;
+    case 'file':  handleFileSelect(chatId, parts[1], parts.slice(2).join(':')); break;
+    case 'sheet': handleSheetSelect(chatId, Number(parts[1])); break;
+
+    case 'add':                  handleAddStart(chatId); break;
+    case 'edit':                 handleEditStart(chatId); break;
+    case 'editpage':             handleEditPage(chatId, Number(parts[1])); break;
+    case 'edit_manual_request':  handleEditRowManualRequest(chatId); break;
+    case 'editrow':              handleEditRowSelect(chatId, Number(parts[1])); break;
+    case 'editfield':            handleEditFieldSelect(chatId, Number(parts[1])); break;
+
+    case 'save':       handleSaveAdd(chatId); break;
+    case 'cancel_add': handleCancelAdd(chatId); break;
+    case 'prev_field': handlePrevField(chatId); break;
+    case 'back':        handleBack(chatId, parts[1]); break;
 
     case 'preview': {
       try {
@@ -120,27 +125,24 @@ function routeAction(chatId, value) {
         _callTelegram_('sendMessage', { chat_id: chatId, text: previewText, parse_mode: 'HTML' });
         showSheetMenu(chatId, state);
       } catch (e) {
-        sendMessage(chatId, '⚠️ Error generating preview: ' + e.message);
+        sendMessage(chatId, getIcons_().WARNING + ' Error generating preview: ' + escapeHtml_(e.message));
         showSheetMenu(chatId, state);
       }
       break;
     }
 
     case 'use_last_direct': {
-      const idx     = state.currentFieldIndex || 0;
+      const idx = state.currentFieldIndex || 0;
       const lastVal = state.lastRowValues ? String(state.lastRowValues[idx]) : '';
       handleAddFieldInput(chatId, state, lastVal);
       break;
     }
-
     case 'use_last_edit_request':
       handleUseLastEditRequest(chatId);
       break;
-
     case 'leave_empty':
       handleAddFieldInput(chatId, state, '');
       break;
-
     case 'finish_row': {
       const headers = state.headers || [];
       for (let i = state.currentFieldIndex; i < headers.length; i++) {
@@ -152,9 +154,9 @@ function routeAction(chatId, value) {
     }
 
     // --- Favorites ---
-    case 'favdoc':        handleToggleFavDoc(chatId);              break;
-    case 'favtab':        handleToggleFavTab(chatId);              break;
-    case 'openfavdoc':    handleOpenFavDoc(chatId, Number(parts[1])); break;
+    case 'favdoc':     handleToggleFavDoc(chatId); break;
+    case 'favtab':      handleToggleFavTab(chatId); break;
+    case 'openfavdoc':  handleOpenFavDoc(chatId, Number(parts[1])); break;
 
     default:
       console.error('Unknown action: ' + value);

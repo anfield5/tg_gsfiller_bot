@@ -1,0 +1,59 @@
+/**
+ * Config.js.example
+ * Copy this file to Config.js (already gitignored) and fill in your own
+ * values. Config.js is never committed — it holds folder IDs and the
+ * accessor for your bot token, which are effectively secrets.
+ *
+ * ADMIN_IDS is NOT set here: it lives in Script Properties
+ * (Apps Script editor → Project Settings → Script Properties → ADMIN_IDS,
+ * a comma-separated list of allowed Telegram chat IDs) so it can be
+ * rotated without a deploy.
+ */
+
+const CONFIG = {
+  // One Drive folder ID per entry — each becomes a top-level menu option.
+  FOLDER_IDS: [
+    'PASTE_YOUR_FOLDER_ID_HERE',
+  ],
+
+  // Optional display name per folder, same order as FOLDER_IDS. Leave an
+  // entry falsy (empty string / omit the index) to fetch the real Drive
+  // folder name at runtime instead (costs one extra Drive call, cached
+  // for 10 minutes).
+  FOLDER_LABELS: [
+    'My Folder',
+  ],
+
+  // How many levels of subfolders to scan for spreadsheets, in addition to
+  // the folder itself:
+  //   0 = only files directly inside the folder
+  //   1 = folder + its immediate subfolders (previous hardcoded behavior)
+  //   2 = folder + subfolders + their subfolders, etc.
+  // Higher values mean more Drive API calls per (uncached) folder open.
+  FOLDER_SCAN_DEPTH: 1,
+
+  // Spreadsheets listed per page in the file picker.
+  FILES_PER_PAGE: 10,
+
+  // How long a folder's file listing is cached, in seconds.
+  FOLDER_CACHE_TTL_SECONDS: 300,
+
+  // Optional: override any subset of the bot's emoji. Unset keys fall back
+  // to DEFAULT_ICONS in Icons.js. Example:
+  // ICONS: {
+  //   ADD: '🆕',
+  //   SAVE: '💾',
+  // },
+};
+
+/**
+ * Returns the Telegram bot token. Store it in Script Properties
+ * (Project Settings → Script Properties → BOT_TOKEN) rather than hardcoding
+ * it here, so it never ends up in source control even by accident.
+ * @returns {string}
+ */
+function getBotToken_() {
+  const token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  if (!token) throw new Error('BOT_TOKEN is not set in Script Properties.');
+  return token;
+}

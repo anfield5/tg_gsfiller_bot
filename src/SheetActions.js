@@ -91,10 +91,10 @@ function actionGetHeaders(fileId, sheetName) {
 function actionAddRow(fileId, sheetName, formData, headers) {
   try {
     // --- 1. Build the data array and append ---
-    const FORMULA_PLACEHOLDER = '🧬 (Calculated Formula)';
+    const placeholder = formulaPlaceholderText_();
     const dataValues = headers.map(h => {
       const val = formData[h];
-      return (val === FORMULA_PLACEHOLDER || val === undefined) ? '' : val;
+      return (val === placeholder || val === undefined) ? '' : val;
     });
 
     appendRowToSheet(fileId, sheetName, dataValues);
@@ -147,11 +147,14 @@ function actionGetSheetGid(fileId, sheetName) { return getSheetGid(fileId, sheet
 
 /**
  * Builds a short HTML preview of the last few rows for the Preview action.
+ * All dynamic content is escaped — sheetName and cell values come straight
+ * from user data and are sent with parse_mode: 'HTML'.
  * @param {string} fileId
  * @param {string} sheetName
  * @returns {string} HTML-formatted Telegram message
  */
 function actionBuildPreviewText(fileId, sheetName) {
+  const icons = getIcons_();
   try {
     const MAX_ROWS = 5;
     const MAX_COLS = 4;
@@ -159,16 +162,17 @@ function actionBuildPreviewText(fileId, sheetName) {
     const rows    = actionGetLastRows(fileId, sheetName, MAX_ROWS);
 
     if (rows.length === 0) {
-      return '📊 <b>Sheet:</b> ' + sheetName + '\n\n⚠️ <i>No data rows found.</i>';
+      return icons.CHART + ' <b>Sheet:</b> ' + escapeHtml_(sheetName) +
+             '\n\n' + icons.WARNING + ' <i>No data rows found.</i>';
     }
 
-    let text = '📊 <b>Last ' + rows.length + ' rows — ' + sheetName + ':</b>\n\n';
+    let text = icons.CHART + ' <b>Last ' + rows.length + ' rows — ' + escapeHtml_(sheetName) + ':</b>\n\n';
     rows.forEach(row => {
-      text += '🔹 <b>Row #' + row.rowIndex + '</b>\n';
+      text += icons.BULLET + ' <b>Row #' + row.rowIndex + '</b>\n';
       headers.forEach((h, colIdx) => {
         let val = (row.values[colIdx] !== undefined) ? String(row.values[colIdx]).trim() : '';
         if (val.length > 20) val = val.substring(0, 17) + '…';
-        if (val.length > 0) text += '• <i>' + h + ':</i> ' + val + '\n';
+        if (val.length > 0) text += '• <i>' + escapeHtml_(h) + ':</i> ' + escapeHtml_(val) + '\n';
       });
       text += '\n';
     });
@@ -176,10 +180,10 @@ function actionBuildPreviewText(fileId, sheetName) {
     const gid    = actionGetSheetGid(fileId, sheetName);
     const minRow = Math.min.apply(null, rows.map(r => r.rowIndex));
     const maxRow = Math.max.apply(null, rows.map(r => r.rowIndex));
-    text += '🔗 <a href="' + buildSheetRangeUrl(fileId, gid, minRow, maxRow, MAX_COLS) + '">Open in Google Sheets</a>';
+    text += icons.LINK + ' <a href="' + buildSheetRangeUrl(fileId, gid, minRow, maxRow, MAX_COLS) + '">Open in Google Sheets</a>';
     return text;
   } catch (e) {
-    return '❌ <i>Preview failed: ' + e.message + '</i>';
+    return icons.CANCEL + ' <i>Preview failed: ' + escapeHtml_(e.message) + '</i>';
   }
 }
 

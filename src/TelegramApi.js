@@ -4,6 +4,24 @@
  * All outbound calls go through _callTelegram_ so error handling is centralised.
  */
 
+/**
+ * Escapes the characters Telegram's HTML parse_mode treats specially.
+ * Every piece of dynamic content (cell values, sheet/file/folder names,
+ * error messages) MUST be passed through this before being concatenated
+ * into a parse_mode: 'HTML' message. Literal markup we add ourselves
+ * (e.g. "<b>") is written around the escaped value, never through it.
+ *
+ * @param {*} value
+ * @returns {string}
+ */
+function escapeHtml_(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function _apiUrl_(method) {
   return 'https://api.telegram.org/bot' + getBotToken_() + '/' + method;
 }

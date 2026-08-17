@@ -31,10 +31,12 @@ function getFolderInfo(folderId) {
 }
 
 /**
- * Lists all Google Sheets files inside a folder (root + one level of
- * subfolders). Uses folder.getFilesByType() — much faster than a global
- * DriveApp.searchFiles() scan because it only iterates files in the target
- * tree, not every spreadsheet accessible to the account.
+ * Lists all Google Sheets files inside a folder, recursing into subfolders
+ * up to CONFIG.FOLDER_SCAN_DEPTH levels deep (default 1, matching the
+ * original "root + one level of subfolders" behavior). Uses
+ * folder.getFilesByType() — much faster than a global DriveApp.searchFiles()
+ * scan because it only iterates files in the target tree, not every
+ * spreadsheet accessible to the account.
  *
  * Results are cached for FOLDER_CACHE_TTL_SECONDS seconds.
  *
@@ -52,18 +54,10 @@ function listSpreadsheetsInFolder(folderId, forceRefresh) {
   }
 
   const files = [];
+  const depth = (CONFIG && CONFIG.FOLDER_SCAN_DEPTH !== undefined) ? CONFIG.FOLDER_SCAN_DEPTH : 1;
 
   try {
-    const rootFolder = DriveApp.getFolderById(folderId);
-
-    // Collect from root folder directly
-    _collectSheets_(rootFolder, files);
-
-    // Collect from immediate subfolders (one level deep, same as original)
-    const subIter = rootFolder.getFolders();
-    while (subIter.hasNext()) {
-      _collectSheets_(subIter.next(), files);
-    }
+    _collectSheetsRecursive_(DriveApp.getFolderById(folderId), files, depth);
   } catch (e) {
     console.error('listSpreadsheetsInFolder failed: ' + e);
   }
@@ -80,15 +74,25 @@ function listSpreadsheetsInFolder(folderId, forceRefresh) {
 }
 
 /**
- * Iterates a Drive folder and pushes all Google Sheets entries into `out`.
+ * Iterates a Drive folder and pushes all Google Sheets entries into `out`,
+ * then recurses into subfolders while remainingDepth > 0.
+ *
  * @param {GoogleAppsScript.Drive.Folder} folder
  * @param {Array}                          out
+ * @param {number}                         remainingDepth  subfolder levels still to scan
  */
-function _collectSheets_(folder, out) {
+function _collectSheetsRecursive_(folder, out, remainingDepth) {
   const iter = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
   while (iter.hasNext()) {
     const f = iter.next();
     if (!f.isTrashed()) out.push({ id: f.getId(), name: f.getName() });
+  }
+
+  if (remainingDepth <= 0) return;
+
+  const subIter = folder.getFolders();
+  while (subIter.hasNext()) {
+    _collectSheetsRecursive_(subIter.next(), out, remainingDepth - 1);
   }
 }
 
