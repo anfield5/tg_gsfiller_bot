@@ -44,6 +44,16 @@ const CONFIG = {
   //   ADD: '🆕',
   //   SAVE: '💾',
   // },
+
+  // Gemini model used by the "Gemini Analysis" button. Flash is fast/cheap
+  // and enough for row/column summarisation; switch to a "pro" model here
+  // if you need deeper reasoning over larger ranges.
+  GEMINI_MODEL: 'gemini-2.5-flash',
+
+  // Safety cap on how many rows of a column/range are sent to Gemini in one
+  // request (keeps token usage and cost bounded on large sheets). The user
+  // is told in the response when data was truncated.
+  GEMINI_MAX_ROWS: 500,
 };
 
 /**
@@ -56,4 +66,16 @@ function getBotToken_() {
   const token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
   if (!token) throw new Error('BOT_TOKEN is not set in Script Properties.');
   return token;
+}
+
+/**
+ * Returns the Gemini API key (from Google AI Studio: https://aistudio.google.com/apikey).
+ * Store it in Script Properties (Project Settings → Script Properties →
+ * GEMINI_API_KEY), never hardcoded here.
+ * @returns {string}
+ */
+function getGeminiApiKey_() {
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) throw new Error('GEMINI_API_KEY is not set in Script Properties.');
+  return key;
 }

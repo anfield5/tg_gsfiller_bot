@@ -205,6 +205,67 @@ function getRowValues(fileId, sheetName, rowIndex) {
     .map(_normaliseDateString_);
 }
 
+/**
+ * Returns the display values of a single column, skipping row 1 (headers),
+ * capped at `maxRows` data rows (from the top). Used by the Gemini Analysis
+ * "Column" option.
+ *
+ * @param {string} fileId
+ * @param {string} sheetName
+ * @param {number} colIndex  1-based
+ * @param {number} maxRows
+ * @returns {{ values: string[], truncated: boolean }}
+ */
+function getColumnValues(fileId, sheetName, colIndex, maxRows) {
+  const sheet   = _getSheet_(fileId, sheetName);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { values: [], truncated: false };
+
+  const available = lastRow - 1; // excluding header row
+  const numRows   = Math.min(available, maxRows);
+  const values = sheet.getRange(2, colIndex, numRows, 1)
+    .getDisplayValues()
+    .map(row => _normaliseDateString_(row[0]));
+
+  return { values: values, truncated: available > maxRows };
+}
+
+/**
+ * Returns the display values of an arbitrary rectangular range given in A1
+ * notation (e.g. "A2:C10"), capped at `maxRows` rows. Used by the Gemini
+ * Analysis "Range" option.
+ *
+ * @param {string} fileId
+ * @param {string} sheetName
+ * @param {string} a1Range
+ * @param {number} maxRows
+ * @returns {{ values: string[][], truncated: boolean }}
+ */
+function getRangeValues(fileId, sheetName, a1Range, maxRows) {
+  const parsed = _parseA1Range_(a1Range);
+  if (!parsed) throw new Error('Could not understand range "' + a1Range + '". Use a format like A2:C10.');
+
+  const sheet     = _getSheet_(fileId, sheetName);
+  const lastRow   = sheet.getLastRow();
+  const lastCol   = sheet.getLastColumn();
+  const startRow  = Math.max(1, parsed.row);
+  const startCol  = Math.max(1, parsed.col);
+  const endRow    = Math.min(lastRow, parsed.row + parsed.numRows - 1);
+  const endCol    = Math.min(lastCol, parsed.col + parsed.numCols - 1);
+
+  if (endRow < startRow || endCol < startCol) return { values: [], truncated: false };
+
+  const requestedRows = endRow - startRow + 1;
+  const numRows = Math.min(requestedRows, maxRows);
+  const numCols = endCol - startCol + 1;
+
+  const values = sheet.getRange(startRow, startCol, numRows, numCols)
+    .getDisplayValues()
+    .map(row => row.map(_normaliseDateString_));
+
+  return { values: values, truncated: requestedRows > maxRows };
+}
+
 // ---------------------------------------------------------------------------
 // Row write helpers
 // ---------------------------------------------------------------------------
@@ -394,4 +455,54 @@ function _sanitiseCellValue_(value) {
   if (typeof value !== 'string') return value;
   if (/^[=+\-@]/.test(value)) return "'" + value;
   return value;
+}
+
+/**
+ * Converts a column letter (or letters, e.g. "AA") to a 1-based column
+ * number. Inverse of columnNumberToLetter() in SheetActions.js.
+ * @param {string} letters
+ * @returns {number}
+ */
+function _columnLetterToNumber_(letters) {
+  let n = 0;
+  for (let i = 0; i < letters.length; i++) {
+    n = n * 26 + (letters.charCodeAt(i) - 64); // 'A' === 65
+  }
+  return n;
+}
+
+/**
+ * Parses an A1-style range string ("A2:C10", or a single cell "B5") into
+ * 1-based { row, col, numRows, numCols }. Returns null if the string isn't
+ * a recognisable range — callers turn that into a user-facing error.
+ * @param {string} a1Range
+ * @returns {{row:number, col:number, numRows:number, numCols:number}|null}
+ */
+function _parseA1Range_(a1Range) {
+  const cellPattern = /^([A-Za-z]+)(\d+)$/;
+  const parts = String(a1Range || '').trim().toUpperCase().split(':');
+  if (parts.length < 1 || parts.length > 2) return null;
+
+  const start = cellPattern.exec(parts[0]);
+  if (!start) return null;
+
+  const startCol = _columnLetterToNumber_(start[1]);
+  const startRow = parseInt(start[2], 10);
+
+  if (parts.length === 1) {
+    return { row: startRow, col: startCol, numRows: 1, numCols: 1 };
+  }
+
+  const end = cellPattern.exec(parts[1]);
+  if (!end) return null;
+
+  const endCol = _columnLetterToNumber_(end[1]);
+  const endRow = parseInt(end[2], 10);
+
+  return {
+    row: Math.min(startRow, endRow),
+    col: Math.min(startCol, endCol),
+    numRows: Math.abs(endRow - startRow) + 1,
+    numCols: Math.abs(endCol - startCol) + 1,
+  };
 }

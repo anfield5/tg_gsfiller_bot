@@ -286,6 +286,11 @@ function renderSheetList(chatId, state, sheets) {
     return [{ label: icon + name, value: 'sheet:' + origIdx }];
   });
 
+  // Gemini Analysis lives here (before Fav Doc, per product decision) —
+  // it starts its own sheet-picker sub-flow rather than requiring a tab to
+  // already be open.
+  keyboardRows.push([{ label: icons.GEMINI + ' Gemini Analysis', value: 'gemini' }]);
+
   // Fav Doc toggle lives here — document is chosen, tab is not yet selected,
   // so this is the correct level for document-level favouriting.
   const docFavLabel = isFavDoc(chatId, state.fileId) ? icons.UNFAV + ' Unfav Doc' : icons.FAV + ' Fav Doc';
@@ -774,6 +779,190 @@ function handleEditFieldInput(chatId, state, text) {
   state.step = 'edit_row_view';
   sendMessage(chatId, getIcons_().SAVE + ' Cell updated.');
   renderRowView(chatId, state);
+}
+
+// ---------------------------------------------------------------------------
+// Gemini Analysis flow
+//
+// Reachable from renderSheetList (document chosen, tab not yet chosen), so
+// this flow picks its own sheet/tab as step 1: sheet -> Row/Column/Range ->
+// type-specific details -> free-text instructions -> call Gemini -> send
+// the result as plain text (never parse_mode HTML — model output is
+// untrusted/arbitrary and must never be able to break message delivery or
+// be interpreted as markup). "Filtering" is intentionally NOT a separate
+// selection mode: the user expresses it in their own words as part of the
+// instructions, and Gemini applies it against the data it's given.
+// ---------------------------------------------------------------------------
+
+function handleGeminiStart(chatId) {
+  const state = getState(chatId);
+  renderGeminiPickSheet(chatId, state);
+}
+
+function renderGeminiPickSheet(chatId, state) {
+  const icons = getIcons_();
+  let sheets = [];
+  try { sheets = actionListSheets(state.fileId); }
+  catch (e) { sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message)); renderSheetList(chatId, state, null); return; }
+
+  state.step = 'gemini_pick_sheet';
+  const keyboardRows = sheets.map((name, idx) => [{ label: icons.SHEET + ' ' + name, value: 'gemini_sheet:' + idx }]);
+  keyboardRows.push([{ label: icons.CANCEL + ' Cancel', value: 'gemini_cancel' }]);
+  _renderMenu(chatId, state, icons.GEMINI + ' Which tab do you want to analyze?', keyboardRows);
+}
+
+function handleGeminiSheetSelect(chatId, sheetIndex) {
+  const state = getState(chatId);
+  let sheets = [];
+  try { sheets = actionListSheets(state.fileId); } catch (e) { /* ignore */ }
+
+  const sheetName = sheets[sheetIndex];
+  if (!sheetName) { renderGeminiPickSheet(chatId, state); return; }
+
+  state.geminiSheetName = sheetName;
+  renderGeminiPickType(chatId, state);
+}
+
+function renderGeminiPickType(chatId, state) {
+  const icons = getIcons_();
+  state.step = 'gemini_pick_type';
+  const keyboardRows = [
+    [{ label: 'Row',    value: 'gemini_type:row'    }],
+    [{ label: 'Column', value: 'gemini_type:column' }],
+    [{ label: 'Range',  value: 'gemini_type:range'  }],
+    [{ label: icons.CANCEL + ' Cancel', value: 'gemini_cancel' }],
+  ];
+  _renderMenu(
+    chatId, state,
+    icons.GEMINI + ' Analyzing <b>' + escapeHtml_(state.geminiSheetName) + '</b>.\n\nWhat should Gemini look at?',
+    keyboardRows
+  );
+}
+
+function handleGeminiTypeSelect(chatId, type) {
+  const state = getState(chatId);
+  state.geminiType = type;
+
+  if (type === 'row') {
+    state.step = 'gemini_wait_row';
+    setState(chatId, state);
+    _renderForceReply(chatId, getIcons_().GEMINI + ' <b>Which row number?</b>', 'e.g. 15');
+    return;
+  }
+
+  if (type === 'range') {
+    state.step = 'gemini_wait_range';
+    setState(chatId, state);
+    _renderForceReply(chatId, getIcons_().GEMINI + ' <b>Which range?</b> (A1 notation, e.g. A2:C10)', 'e.g. A2:C10');
+    return;
+  }
+
+  if (type === 'column') {
+    renderGeminiPickColumn(chatId, state);
+    return;
+  }
+
+  renderGeminiPickType(chatId, state);
+}
+
+function renderGeminiPickColumn(chatId, state) {
+  const icons = getIcons_();
+  let headers = [];
+  try { headers = actionGetHeaders(state.fileId, state.geminiSheetName); }
+  catch (e) { sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message)); showSheetMenu(chatId, state); return; }
+
+  state.step = 'gemini_pick_column';
+  const keyboardRows = headers.map((h, idx) => [{ label: formatPreview(h, 30), value: 'gemini_col:' + idx }]);
+  keyboardRows.push([{ label: icons.CANCEL + ' Cancel', value: 'gemini_cancel' }]);
+  _renderMenu(chatId, state, 'Which column?', keyboardRows);
+}
+
+function handleGeminiColumnSelect(chatId, colIndex) {
+  const state = getState(chatId);
+  let headers = [];
+  try { headers = actionGetHeaders(state.fileId, state.geminiSheetName); } catch (e) { /* ignore */ }
+
+  const label = headers[colIndex];
+  if (label === undefined) { renderGeminiPickColumn(chatId, state); return; }
+
+  state.geminiColIndex = colIndex + 1; // 1-based for DataAccess
+  state.geminiColLabel = label;
+  renderGeminiPromptRequest(chatId, state);
+}
+
+function handleGeminiRowInput(chatId, state, text) {
+  const rowIndex = parseInt(text, 10);
+  if (isNaN(rowIndex) || rowIndex < 2) {
+    sendMessage(chatId, getIcons_().WARNING + ' Please enter a valid row number (2 or higher — row 1 is the header).');
+    return;
+  }
+  state.geminiRowIndex = rowIndex;
+  renderGeminiPromptRequest(chatId, state);
+}
+
+function handleGeminiRangeInput(chatId, state, text) {
+  state.geminiRange = text.trim();
+  renderGeminiPromptRequest(chatId, state);
+}
+
+function renderGeminiPromptRequest(chatId, state) {
+  state.step = 'gemini_wait_prompt';
+  setState(chatId, state);
+  _renderForceReply(
+    chatId,
+    getIcons_().GEMINI + ' <b>What should Gemini do with this data?</b>\n\n' +
+    'Type your instructions (you can include filters in plain language, e.g. ' +
+    '"only consider rows where Status is Done, then summarise the totals").',
+    'e.g. Summarise the trend...'
+  );
+}
+
+function handleGeminiPromptInput(chatId, state, userPrompt) {
+  const icons = getIcons_();
+  sendMessage(chatId, icons.GEMINI + ' Analyzing…');
+
+  let result;
+  try {
+    if (state.geminiType === 'row') {
+      result = actionAnalyzeRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt);
+    } else if (state.geminiType === 'column') {
+      result = actionAnalyzeColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt);
+    } else if (state.geminiType === 'range') {
+      result = actionAnalyzeRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt);
+    } else {
+      throw new Error('Unknown analysis type.');
+    }
+  } catch (e) {
+    sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message));
+    _finishGeminiFlow_(chatId, state);
+    return;
+  }
+
+  sendLongPlainMessage(chatId, result);
+  _finishGeminiFlow_(chatId, state);
+}
+
+function handleGeminiCancel(chatId) {
+  const state = getState(chatId);
+  sendMessage(chatId, 'Cancelled.');
+  _clearGeminiState_(state);
+  renderSheetList(chatId, state, null);
+}
+
+/** Lands the user on the sheet menu for the tab that was just analyzed. */
+function _finishGeminiFlow_(chatId, state) {
+  state.sheetName = state.geminiSheetName;
+  _clearGeminiState_(state);
+  showSheetMenu(chatId, state);
+}
+
+function _clearGeminiState_(state) {
+  delete state.geminiSheetName;
+  delete state.geminiType;
+  delete state.geminiRowIndex;
+  delete state.geminiColIndex;
+  delete state.geminiColLabel;
+  delete state.geminiRange;
 }
 
 // ---------------------------------------------------------------------------

@@ -76,6 +76,20 @@ function handleMessage(message) {
     return;
   }
 
+  // --- Gemini Analysis free-text input phases ---
+  if (state.step === 'gemini_wait_row') {
+    handleGeminiRowInput(chatId, state, text);
+    return;
+  }
+  if (state.step === 'gemini_wait_range') {
+    handleGeminiRangeInput(chatId, state, text);
+    return;
+  }
+  if (state.step === 'gemini_wait_prompt') {
+    handleGeminiPromptInput(chatId, state, text);
+    return;
+  }
+
   // --- Standard menu button match ---
   const options = state.currentOptions || [];
   const matched = options.find(o => o.label === text);
@@ -157,6 +171,13 @@ function routeAction(chatId, value) {
     case 'favdoc':     handleToggleFavDoc(chatId); break;
     case 'favtab':      handleToggleFavTab(chatId); break;
     case 'openfavdoc':  handleOpenFavDoc(chatId, Number(parts[1])); break;
+
+    // --- Gemini Analysis ---
+    case 'gemini':         handleGeminiStart(chatId); break;
+    case 'gemini_sheet':   handleGeminiSheetSelect(chatId, Number(parts[1])); break;
+    case 'gemini_type':    handleGeminiTypeSelect(chatId, parts[1]); break;
+    case 'gemini_col':     handleGeminiColumnSelect(chatId, Number(parts[1])); break;
+    case 'gemini_cancel':  handleGeminiCancel(chatId); break;
 
     default:
       console.error('Unknown action: ' + value);

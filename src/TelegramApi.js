@@ -109,6 +109,51 @@ function sendMessageNoKeyboard(chatId, text) {
   });
 }
 
+/**
+ * Sends plain text with NO parse_mode — used for content Claude/Gemini/the
+ * user did not author as trusted HTML (e.g. free-form model output), so
+ * markup-like characters in it can never produce a malformed-HTML send
+ * failure or unintended formatting.
+ *
+ * @param {string|number} chatId
+ * @param {string}        text
+ */
+function sendPlainMessage(chatId, text) {
+  return _callTelegram_('sendMessage', { chat_id: chatId, text: text });
+}
+
+/**
+ * Sends long plain text as multiple messages, staying under Telegram's
+ * ~4096 character limit per message. Splits on line breaks where possible
+ * so paragraphs aren't cut mid-sentence.
+ *
+ * @param {string|number} chatId
+ * @param {string}        text
+ * @param {number}        [chunkSize]
+ */
+function sendLongPlainMessage(chatId, text, chunkSize) {
+  const limit = chunkSize || 3500;
+  const lines = String(text).split('\n');
+  let buffer = '';
+
+  lines.forEach((line) => {
+    const candidate = buffer ? buffer + '\n' + line : line;
+    if (candidate.length > limit && buffer) {
+      sendPlainMessage(chatId, buffer);
+      buffer = line;
+    } else {
+      buffer = candidate;
+    }
+    // A single line longer than the limit on its own — hard-split it.
+    while (buffer.length > limit) {
+      sendPlainMessage(chatId, buffer.slice(0, limit));
+      buffer = buffer.slice(limit);
+    }
+  });
+
+  if (buffer) sendPlainMessage(chatId, buffer);
+}
+
 // ---------------------------------------------------------------------------
 // Webhook management (run once from the Apps Script editor, not at runtime)
 // ---------------------------------------------------------------------------

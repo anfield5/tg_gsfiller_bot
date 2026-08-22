@@ -22,9 +22,11 @@ const SRC_DIR = path.join(__dirname, '..', 'src');
 const DEFAULT_FILES = [
   'Icons.js',
   'TelegramApi.js',
+  'GeminiApi.js',
   'State.js',
   'DataAccess.js',
   'SheetActions.js',
+  'GeminiActions.js',
   'Navigation.js',
   'Code.js',
 ];
@@ -76,6 +78,7 @@ function createProject(overrides) {
     Session: { getScriptTimeZone: () => 'UTC' },
     MimeType: { GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet' },
     getBotToken_: overrides.getBotToken_ || (() => 'TEST_TOKEN'),
+    getGeminiApiKey_: overrides.getGeminiApiKey_ || (() => 'TEST_GEMINI_KEY'),
   };
 
   const context = vm.createContext(sandbox);
