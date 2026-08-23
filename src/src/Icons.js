@@ -47,11 +47,11 @@ const DEFAULT_ICONS = {
   SAVE:        '✅',
   FORMULA:     '🧬',
   POINTER:     '👉',
-
+  // Gemini analysis
+  GEMINI:      '✨', 
   // Status
   WARNING: '⚠️',
   DENIED:  '🚫',
-  GEMINI: '✨',
 };
 
 let _iconsCache = null;
