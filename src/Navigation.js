@@ -785,17 +785,102 @@ function handleEditFieldInput(chatId, state, text) {
 // Gemini Analysis flow
 //
 // Reachable from renderSheetList (document chosen, tab not yet chosen), so
-// this flow picks its own sheet/tab as step 1: sheet -> Row/Column/Range ->
-// type-specific details -> free-text instructions -> call Gemini -> send
-// the result as plain text (never parse_mode HTML — model output is
-// untrusted/arbitrary and must never be able to break message delivery or
-// be interpreted as markup). "Filtering" is intentionally NOT a separate
-// selection mode: the user expresses it in their own words as part of the
-// instructions, and Gemini applies it against the data it's given.
+// this flow picks its own model + sheet as steps 1-2: model -> sheet ->
+// Row/Column/Range -> type-specific details -> free-text instructions ->
+// call Gemini -> send the result as plain text (never parse_mode HTML —
+// model output is untrusted/arbitrary and must never be able to break
+// message delivery or be interpreted as markup). "Filtering" is
+// intentionally NOT a separate selection mode: the user expresses it in
+// their own words as part of the instructions, and Gemini applies it
+// against the data it's given.
+//
+// The model is never hardcoded: it's fetched live from listGeminiModels_()
+// (GeminiApi.js) and offered as a keyboard, because Google periodically
+// retires model ids (see GeminiApi.js header comment re: the 2026-08-23
+// gemini-2.5-flash retirement) — picking from the live list means the bot
+// never goes stale again.
 // ---------------------------------------------------------------------------
 
 function handleGeminiStart(chatId) {
   const state = getState(chatId);
+  renderGeminiPickModel(chatId, state);
+}
+
+function renderGeminiPickModel(chatId, state) {
+  const icons = getIcons_();
+
+  let models = [];
+  try {
+    models = listGeminiModels_();
+  } catch (e) {
+    sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message));
+    renderSheetList(chatId, state, null);
+    return;
+  }
+
+  state.step = 'gemini_pick_model';
+  // {name, modality} pairs only (short strings) — safe to persist in
+  // state, unlike the row lists elsewhere in this file which are kept
+  // local specifically because they could exceed the 9 KB
+  // PropertiesService per-property limit.
+  state.geminiModelChoices = models.map(m => ({ name: m.name, modality: m.modality }));
+
+  // Grouped under a header row per use-case category (fast & cheap / deep
+  // reasoning / agentic / general / audio narration / image generation) so
+  // a 10-15 model list is scannable instead of one long column. Header
+  // rows route to 'gemini_noop' — tapping one just re-renders this same
+  // screen, it isn't a real option. Models within a category are laid out
+  // 2 per row. A model flagged as recently overloaded (isGeminiModelOverloaded_
+  // — this bot got a 503 "high demand" from it within the last 5 minutes,
+  // see GeminiApi.js) gets a warning prefix on its label; it's still
+  // selectable, this is just a heads-up, not a guarantee either way.
+  const byCategory = {};
+  models.forEach((m, idx) => {
+    const category   = m.category || GEMINI_FALLBACK_CATEGORY_;
+    const overloaded  = isGeminiModelOverloaded_(m.name);
+    const label = (overloaded ? icons.WARNING + ' ' : '') + m.displayName + (overloaded ? ' (busy)' : '');
+    if (!byCategory[category]) byCategory[category] = [];
+    byCategory[category].push({ label: label, value: 'gemini_model:' + idx });
+  });
+
+  const keyboardRows = [];
+  GEMINI_MODEL_CATEGORY_ORDER_.forEach((category) => {
+    const rows = byCategory[category];
+    if (!rows || !rows.length) return;
+    keyboardRows.push([{ label: '— ' + category + ' —', value: 'gemini_noop' }]);
+    // 2 buttons per row within the category (last row may have just 1).
+    for (let i = 0; i < rows.length; i += 2) {
+      keyboardRows.push(rows.slice(i, i + 2));
+    }
+  });
+  keyboardRows.push([{ label: icons.REFRESH + ' Refresh list', value: 'gemini_model_refresh' }]);
+  keyboardRows.push([{ label: icons.CANCEL + ' Cancel', value: 'gemini_cancel' }]);
+
+  _renderMenu(
+    chatId, state,
+    icons.GEMINI + ' Choose a Gemini model (free tier only). Audio models read the answer aloud instead of texting it; ' +
+    'image models aren\'t available yet — Google doesn\'t offer a free one right now.',
+    keyboardRows
+  );
+}
+
+/** Clears the cached model list and re-renders the picker with fresh data. */
+function handleGeminiModelRefresh(chatId) {
+  clearGeminiModelsCache_();
+  const state = getState(chatId);
+  renderGeminiPickModel(chatId, state);
+}
+
+function handleGeminiModelSelect(chatId, modelIndex) {
+  const state   = getState(chatId);
+  const choices = state.geminiModelChoices || [];
+  const choice  = choices[modelIndex];
+
+  if (!choice) { renderGeminiPickModel(chatId, state); return; }
+
+  state.geminiModel    = choice.name;
+  state.geminiModality = choice.modality || 'text';
+  delete state.geminiModelChoices; // no longer needed once a model is chosen
   renderGeminiPickSheet(chatId, state);
 }
 
@@ -808,7 +893,11 @@ function renderGeminiPickSheet(chatId, state) {
   state.step = 'gemini_pick_sheet';
   const keyboardRows = sheets.map((name, idx) => [{ label: icons.SHEET + ' ' + name, value: 'gemini_sheet:' + idx }]);
   keyboardRows.push([{ label: icons.CANCEL + ' Cancel', value: 'gemini_cancel' }]);
-  _renderMenu(chatId, state, icons.GEMINI + ' Which tab do you want to analyze?', keyboardRows);
+  _renderMenu(
+    chatId, state,
+    icons.GEMINI + ' Model: <b>' + escapeHtml_(state.geminiModel) + '</b>\n\nWhich tab do you want to analyze?',
+    keyboardRows
+  );
 }
 
 function handleGeminiSheetSelect(chatId, sheetIndex) {
@@ -917,28 +1006,100 @@ function renderGeminiPromptRequest(chatId, state) {
   );
 }
 
-function handleGeminiPromptInput(chatId, state, userPrompt) {
-  const icons = getIcons_();
-  sendMessage(chatId, icons.GEMINI + ' Analyzing…');
+/**
+ * Sends an audio Blob to Telegram via the raw sendAudio method (needs
+ * multipart/form-data upload, not the JSON-body sendMessage path). Talks
+ * to the Telegram API directly via getBotToken_() rather than going
+ * through TelegramApi.js's helpers, which are all built around text
+ * messages.
+ * @param {string} chatId
+ * @param {GoogleAppsScript.Base.Blob} blob
+ * @param {string} [caption]
+ */
+function _sendAudioBlob_(chatId, blob, caption) {
+  const token   = getBotToken_();
+  const url     = 'https://api.telegram.org/bot' + token + '/sendAudio';
+  const payload = { chat_id: String(chatId), audio: blob };
+  if (caption) payload.caption = caption.slice(0, 1024); // Telegram caption limit
 
-  let result;
+  const response = UrlFetchApp.fetch(url, { method: 'post', payload: payload, muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    Logger.log('Telegram sendAudio error (HTTP ' + code + '): ' + response.getContentText());
+    throw new Error('Failed to send audio to Telegram (HTTP ' + code + ').');
+  }
+}
+
+/**
+ * Sends an image Blob to Telegram via the raw sendPhoto method. See
+ * _sendAudioBlob_ above for why this bypasses TelegramApi.js. Not
+ * reachable yet — no free image model exists (see GeminiApi.js) — but
+ * ready for when one does.
+ * @param {string} chatId
+ * @param {GoogleAppsScript.Base.Blob} blob
+ * @param {string} [caption]
+ */
+function _sendPhotoBlob_(chatId, blob, caption) {
+  const token   = getBotToken_();
+  const url     = 'https://api.telegram.org/bot' + token + '/sendPhoto';
+  const payload = { chat_id: String(chatId), photo: blob };
+  if (caption) payload.caption = caption.slice(0, 1024); // Telegram caption limit
+
+  const response = UrlFetchApp.fetch(url, { method: 'post', payload: payload, muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    Logger.log('Telegram sendPhoto error (HTTP ' + code + '): ' + response.getContentText());
+    throw new Error('Failed to send photo to Telegram (HTTP ' + code + ').');
+  }
+}
+
+function handleGeminiPromptInput(chatId, state, userPrompt) {
+  const icons    = getIcons_();
+  const modality = state.geminiModality || 'text';
+  sendMessage(chatId, icons.GEMINI + (modality === 'audio' ? ' Narrating…' : modality === 'image' ? ' Illustrating…' : ' Analyzing…'));
+
   try {
-    if (state.geminiType === 'row') {
-      result = actionAnalyzeRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt);
-    } else if (state.geminiType === 'column') {
-      result = actionAnalyzeColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt);
-    } else if (state.geminiType === 'range') {
-      result = actionAnalyzeRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt);
+    if (modality === 'audio') {
+      let audioBlob;
+      if (state.geminiType === 'row') {
+        audioBlob = actionNarrateRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
+      } else if (state.geminiType === 'column') {
+        audioBlob = actionNarrateColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
+      } else if (state.geminiType === 'range') {
+        audioBlob = actionNarrateRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
+      } else {
+        throw new Error('Unknown analysis type.');
+      }
+      _sendAudioBlob_(chatId, audioBlob);
+    } else if (modality === 'image') {
+      let picture;
+      if (state.geminiType === 'row') {
+        picture = actionIllustrateRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
+      } else if (state.geminiType === 'column') {
+        picture = actionIllustrateColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
+      } else if (state.geminiType === 'range') {
+        picture = actionIllustrateRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
+      } else {
+        throw new Error('Unknown analysis type.');
+      }
+      _sendPhotoBlob_(chatId, picture.blob, picture.caption);
     } else {
-      throw new Error('Unknown analysis type.');
+      let result;
+      if (state.geminiType === 'row') {
+        result = actionAnalyzeRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
+      } else if (state.geminiType === 'column') {
+        result = actionAnalyzeColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
+      } else if (state.geminiType === 'range') {
+        result = actionAnalyzeRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
+      } else {
+        throw new Error('Unknown analysis type.');
+      }
+      sendLongPlainMessage(chatId, result);
     }
   } catch (e) {
     sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message));
-    _finishGeminiFlow_(chatId, state);
-    return;
   }
 
-  sendLongPlainMessage(chatId, result);
   _finishGeminiFlow_(chatId, state);
 }
 
@@ -957,6 +1118,9 @@ function _finishGeminiFlow_(chatId, state) {
 }
 
 function _clearGeminiState_(state) {
+  delete state.geminiModel;
+  delete state.geminiModality;
+  delete state.geminiModelChoices;
   delete state.geminiSheetName;
   delete state.geminiType;
   delete state.geminiRowIndex;

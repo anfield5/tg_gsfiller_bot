@@ -173,7 +173,10 @@ function routeAction(chatId, value) {
     case 'openfavdoc':  handleOpenFavDoc(chatId, Number(parts[1])); break;
 
     // --- Gemini Analysis ---
-    case 'gemini':         handleGeminiStart(chatId); break;
+    case 'gemini':               handleGeminiStart(chatId); break;
+    case 'gemini_model':         handleGeminiModelSelect(chatId, Number(parts[1])); break;
+    case 'gemini_model_refresh': handleGeminiModelRefresh(chatId); break;
+    case 'gemini_noop':          break; // group header row in the model picker — not a real option
     case 'gemini_sheet':   handleGeminiSheetSelect(chatId, Number(parts[1])); break;
     case 'gemini_type':    handleGeminiTypeSelect(chatId, parts[1]); break;
     case 'gemini_col':     handleGeminiColumnSelect(chatId, Number(parts[1])); break;
