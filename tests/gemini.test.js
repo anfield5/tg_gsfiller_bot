@@ -167,7 +167,244 @@ test('callGemini_ throws a specific error when the response is safety-blocked', 
 test('callGemini_ throws when there are no candidates at all', () => {
   const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
   urlFetch.fetch = () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify({}) });
+  // No `candidates` key at all is a distinct failure from "candidate present
+  // but its parts were empty" (see the next test) — GeminiApi.js reports
+  // them with different messages, so pin each to its own wording.
+  assert.throws(() => context.callGemini_('x'), /no candidates/);
+});
+
+test('callGemini_ throws "empty response" when a candidate is present but has no text', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }),
+  });
   assert.throws(() => context.callGemini_('x'), /empty response/);
+});
+
+test('callGemini_ marks the model overloaded on a 503, so isGeminiModelOverloaded_ picks it up', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({ getResponseCode: () => 503, getContentText: () => '{"error":{"message":"high demand"}}' });
+
+  assert.equal(context.isGeminiModelOverloaded_('gemini-3.6-flash'), false);
+  assert.throws(() => context.callGemini_('x', 'gemini-3.6-flash'), /HTTP 503/);
+  assert.equal(context.isGeminiModelOverloaded_('gemini-3.6-flash'), true);
+  // A different model must not be affected.
+  assert.equal(context.isGeminiModelOverloaded_('gemini-2.5-pro'), false);
+});
+
+test('callGemini_ does NOT mark the model overloaded on a non-503 error', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({ getResponseCode: () => 429, getContentText: () => '{"error":{"message":"rate limited"}}' });
+  assert.throws(() => context.callGemini_('x', 'gemini-3.6-flash'), /HTTP 429/);
+  assert.equal(context.isGeminiModelOverloaded_('gemini-3.6-flash'), false);
+});
+
+// ---------------------------------------------------------------------------
+// _findGeminiAllowEntry_ / _geminiPrefixMatches_ (GeminiApi.js) — the
+// free-tier allowlist gate. Regression coverage for the false-positive bug
+// caught live on 2026-08-24 (naive prefix matching let "gemini-2.5-pro"
+// match the unrelated sibling "gemini-2.5-pro-preview-tts").
+// ---------------------------------------------------------------------------
+
+test('_findGeminiAllowEntry_ accepts exact ids and genuine version/date/Gemma-size suffixes', () => {
+  const { context } = createProject({ files: ['GeminiApi.js'] });
+  const free = context._getDefaultFreeModels_();
+  const accept = [
+    'gemini-2.5-pro',
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash-lite-preview-09-2025',
+    'gemini-3.5-flash-lite',
+    'gemini-3.7-flash',
+    'gemini-2.5-flash-preview-tts',
+    'gemma-3-27b-it',
+  ];
+  accept.forEach((id) => {
+    assert.ok(context._findGeminiAllowEntry_(id, free), id + ' should be allowed');
+  });
+});
+
+test('_findGeminiAllowEntry_ rejects unrelated sibling models sharing a common string prefix', () => {
+  const { context } = createProject({ files: ['GeminiApi.js'] });
+  const free = context._getDefaultFreeModels_();
+  const reject = [
+    'gemini-2.5-pro-preview-tts',  // sibling of gemini-2.5-pro, different (paid) model
+    'gemini-2.5-flash',            // bare id blocked (404 for new accounts) — only -lite is allowed
+    'gemini-2.5-flash-image',      // Nano Banana — sibling of gemini-2.5-flash-lite's prefix family
+    'gemini-3.1-flash-image',      // Nano Banana 2
+  ];
+  reject.forEach((id) => {
+    assert.equal(context._findGeminiAllowEntry_(id, free), null, id + ' should NOT be allowed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listGeminiModels_ (GeminiApi.js) — ListModels fetch, allowlist filter,
+// dedup, categorization, and caching.
+// ---------------------------------------------------------------------------
+
+function rawModel(name, displayName, description) {
+  return { name: 'models/' + name, displayName, description, supportedGenerationMethods: ['generateContent'] };
+}
+
+test('listGeminiModels_ keeps only allowlisted, generateContent-capable models, sorted by displayName', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({
+      models: [
+        rawModel('gemini-3.6-flash', 'Gemini 3.6 Flash', 'Our most cost-efficient model'),
+        rawModel('gemini-2.5-pro', 'Gemini 2.5 Pro', 'State-of-the-art reasoning'),
+        rawModel('gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview', 'Not free'), // not on allowlist
+        { ...rawModel('embedding-001', 'Embedding 001', ''), supportedGenerationMethods: ['embedContent'] }, // wrong method
+      ],
+    }),
+  });
+
+  const models = context.listGeminiModels_();
+  const names = models.map((m) => m.name);
+  assert.deepEqual(names, ['gemini-2.5-pro', 'gemini-3.6-flash']); // sorted by displayName
+  assert.ok(!names.includes('gemini-3.1-pro-preview'));
+  assert.ok(!names.includes('embedding-001'));
+});
+
+test('listGeminiModels_ deduplicates models that share a displayName, keeping the first', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({
+      models: [
+        rawModel('gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite', 'Cost effective'),
+        rawModel('gemini-2.5-flash-lite-preview-09-2025', 'Gemini 2.5 Flash-Lite', 'Cost effective'),
+      ],
+    }),
+  });
+  const models = context.listGeminiModels_();
+  assert.equal(models.length, 1);
+  assert.equal(models[0].name, 'gemini-2.5-flash-lite');
+});
+
+test('listGeminiModels_ classifies by description and assigns fixed categories for audio', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({
+      models: [
+        rawModel('gemini-3.6-flash', 'Gemini 3.6 Flash', 'Our most cost-efficient model'),
+        rawModel('gemini-2.5-pro', 'Gemini 2.5 Pro', 'Best for state-of-the-art reasoning and coding'),
+        rawModel('gemini-2.5-flash-preview-tts', 'Gemini 2.5 Flash Preview TTS', 'Text to speech'),
+      ],
+    }),
+  });
+  const byName = {};
+  context.listGeminiModels_().forEach((m) => { byName[m.name] = m; });
+  assert.equal(byName['gemini-3.6-flash'].category, 'Best for: fast & cheap analysis');
+  assert.equal(byName['gemini-2.5-pro'].category, 'Best for: deep reasoning & coding');
+  assert.equal(byName['gemini-2.5-flash-preview-tts'].category, 'Best for: audio narration');
+  assert.equal(byName['gemini-2.5-flash-preview-tts'].modality, 'audio');
+  assert.equal(byName['gemini-3.6-flash'].modality, 'text');
+});
+
+test('listGeminiModels_ caches its result; a second call does not re-fetch', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = (url, options) => {
+    urlFetch.calls.push({ url, options });
+    return {
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ models: [rawModel('gemini-3.6-flash', 'Gemini 3.6 Flash', 'cost-efficient')] }),
+    };
+  };
+  context.listGeminiModels_();
+  context.listGeminiModels_();
+  assert.equal(urlFetch.calls.length, 1);
+});
+
+test('clearGeminiModelsCache_ forces the next listGeminiModels_ call to re-fetch', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = (url, options) => {
+    urlFetch.calls.push({ url, options });
+    return {
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ models: [rawModel('gemini-3.6-flash', 'Gemini 3.6 Flash', 'cost-efficient')] }),
+    };
+  };
+  context.listGeminiModels_();
+  context.clearGeminiModelsCache_();
+  context.listGeminiModels_();
+  assert.equal(urlFetch.calls.length, 2);
+});
+
+test('listGeminiModels_ throws a clear error when no models on the account are on the allowlist', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({ models: [rawModel('gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview', 'Not free')] }),
+  });
+  assert.throws(() => context.listGeminiModels_(), /no free-tier models/);
+});
+
+// ---------------------------------------------------------------------------
+// callGeminiAudio_ / callGeminiImage_ (GeminiApi.js)
+// ---------------------------------------------------------------------------
+
+test('callGeminiAudio_ sends AUDIO responseModalities and wraps the returned PCM as a WAV blob', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const pcmBase64 = Buffer.from([1, 2, 3, 4]).toString('base64');
+  urlFetch.fetch = (url, options) => {
+    urlFetch.calls.push({ url, options, body: JSON.parse(options.payload) });
+    return {
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcmBase64 } }] } }],
+      }),
+    };
+  };
+
+  const blob = context.callGeminiAudio_('Narrate this', 'gemini-2.5-flash-preview-tts');
+  assert.equal(blob.mimeType, 'audio/wav');
+  assert.equal(urlFetch.calls[0].body.generationConfig.responseModalities[0], 'AUDIO');
+  // 44-byte RIFF/WAVE header + the 4 PCM bytes from above.
+  assert.equal(blob.bytes.length, 44 + 4);
+});
+
+test('callGeminiAudio_ throws when Gemini does not return inline audio data', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'no audio here' }] } }] }),
+  });
+  assert.throws(() => context.callGeminiAudio_('x', 'gemini-2.5-flash-preview-tts'), /did not return audio data/);
+});
+
+test('callGeminiImage_ sends TEXT+IMAGE responseModalities and returns the image blob plus any caption text', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const imgBase64 = Buffer.from([9, 9, 9]).toString('base64');
+  urlFetch.fetch = (url, options) => {
+    urlFetch.calls.push({ url, options, body: JSON.parse(options.payload) });
+    return {
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        candidates: [{ content: { parts: [
+          { inlineData: { mimeType: 'image/png', data: imgBase64 } },
+          { text: 'A chart of the totals.' },
+        ] } }],
+      }),
+    };
+  };
+
+  const result = context.callGeminiImage_('Draw this', 'gemini-x-flash-image');
+  assert.deepEqual(urlFetch.calls[0].body.generationConfig.responseModalities, ['TEXT', 'IMAGE']);
+  assert.equal(result.blob.mimeType, 'image/png');
+  assert.equal(result.caption, 'A chart of the totals.');
+});
+
+test('callGeminiImage_ throws when Gemini returns no image', () => {
+  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  urlFetch.fetch = () => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'just text, no image' }] } }] }),
+  });
+  assert.throws(() => context.callGeminiImage_('x', 'gemini-x-flash-image'), /did not return an image/);
 });
 
 // ---------------------------------------------------------------------------

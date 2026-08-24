@@ -64,6 +64,15 @@ const DEFAULT_FREE_MODELS_ = [
   // — no other code changes needed.
 ];
 
+/**
+ * Accessor for DEFAULT_FREE_MODELS_. `const` top-level bindings aren't
+ * reachable from outside this file's execution context (e.g. the test
+ * harness's vm sandbox only exposes `function`/`var` globals), so tests
+ * that need to exercise the real allowlist go through this instead of
+ * reimplementing it and risking drift.
+ */
+function _getDefaultFreeModels_() { return DEFAULT_FREE_MODELS_; }
+
 // Groups TEXT models by what they're actually good at (per Google's own
 // model descriptions, returned as `description` by ListModels) rather
 // than by family name — "Flash" vs "Pro" tells you nothing useful when
@@ -259,6 +268,61 @@ function isGeminiModelOverloaded_(model) {
 }
 
 /**
+ * Shared POST to a model's generateContent endpoint. Centralizes the
+ * things every caller (callGemini_ / callGeminiAudio_ / callGeminiImage_)
+ * needs: API-key check, URL building, and the muteHttpExceptions fetch
+ * itself. Callers still own their own request payload and response
+ * parsing, since those genuinely differ per modality.
+ *
+ * @param {string} model
+ * @param {Object} payload  request body (contents, generationConfig, etc.)
+ * @returns {{code: number, bodyText: string}}
+ */
+function _geminiFetch_(model, payload) {
+  const apiKey = getGeminiApiKey_();
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not set in Script Properties.');
+  }
+
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+    encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  return { code: response.getResponseCode(), bodyText: response.getContentText() };
+}
+
+/**
+ * Shared non-2xx handling for all three call*_ functions below: extracts
+ * Google's real error message (instead of a bare status code), records a
+ * 503 against the overload tracker, logs the raw body, and throws.
+ * Always throws — callers use it as `if (bad) _throwGeminiHttpError_(...)`.
+ *
+ * @param {number} code
+ * @param {string} bodyText
+ * @param {string} model
+ * @param {string} context  short label distinguishing text/audio/image
+ *   requests in the log and error message, e.g. "request", "audio request".
+ */
+function _throwGeminiHttpError_(code, bodyText, model, context) {
+  let reason = bodyText;
+  try {
+    const errJson = JSON.parse(bodyText);
+    if (errJson && errJson.error && errJson.error.message) reason = errJson.error.message;
+  } catch (parseErr) {
+    // bodyText wasn't JSON; fall back to raw text.
+  }
+  if (code === 503) _markGeminiModelOverloaded_(model);
+  Logger.log('Gemini ' + context + ' error (HTTP ' + code + ') for model "' + model + '": ' + bodyText);
+  throw new Error('Gemini ' + context + ' failed (HTTP ' + code + '): ' + reason);
+}
+
+/**
  * Calls Gemini's generateContent endpoint for plain text output.
  *
  * @param {string} prompt
@@ -269,45 +333,10 @@ function isGeminiModelOverloaded_(model) {
  * @returns {string}
  */
 function callGemini_(prompt, modelOverride) {
-  const model  = modelOverride || (CONFIG && CONFIG.GEMINI_MODEL) || 'gemini-3.6-flash';
-  const apiKey = getGeminiApiKey_();
+  const model = modelOverride || (CONFIG && CONFIG.GEMINI_MODEL) || 'gemini-3.6-flash';
+  const { code, bodyText } = _geminiFetch_(model, { contents: [{ parts: [{ text: prompt }] }] });
 
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set in Script Properties.');
-  }
-
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-    encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
-
-  const payload = {
-    contents: [{ parts: [{ text: prompt }] }]
-  };
-
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
-
-  const code     = response.getResponseCode();
-  const bodyText = response.getContentText();
-
-  if (code < 200 || code >= 300) {
-    // Surface Google's real error message instead of a bare status code.
-    let reason = bodyText;
-    try {
-      const errJson = JSON.parse(bodyText);
-      if (errJson && errJson.error && errJson.error.message) {
-        reason = errJson.error.message;
-      }
-    } catch (parseErr) {
-      // bodyText wasn't JSON; fall back to raw text below.
-    }
-    if (code === 503) _markGeminiModelOverloaded_(model);
-    Logger.log('Gemini API error (HTTP ' + code + ') for model "' + model + '": ' + bodyText);
-    throw new Error('Gemini request failed (HTTP ' + code + '): ' + reason);
-  }
+  if (code < 200 || code >= 300) _throwGeminiHttpError_(code, bodyText, model, 'request');
 
   let data;
   try {
@@ -390,18 +419,10 @@ function _pcmToWavBlob_(base64Pcm, sampleRate, numChannels, bitsPerSample) {
  * @returns {GoogleAppsScript.Base.Blob}  WAV audio, ready for sendAudio
  */
 function callGeminiAudio_(prompt, model) {
-  const apiKey = getGeminiApiKey_();
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set in Script Properties.');
-  }
-
   // See https://ai.google.dev/gemini-api/docs/speech-generation for the
   // full list of prebuilt voice names; override the default via
   // CONFIG.GEMINI_TTS_VOICE in Config.js.
   const voiceName = (CONFIG && CONFIG.GEMINI_TTS_VOICE) || 'Kore';
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-    encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
-
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
@@ -410,26 +431,8 @@ function callGeminiAudio_(prompt, model) {
     }
   };
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
-
-  const code     = response.getResponseCode();
-  const bodyText = response.getContentText();
-
-  if (code < 200 || code >= 300) {
-    let reason = bodyText;
-    try {
-      const errJson = JSON.parse(bodyText);
-      if (errJson && errJson.error && errJson.error.message) reason = errJson.error.message;
-    } catch (parseErr) { /* not JSON, fall back to raw text */ }
-    if (code === 503) _markGeminiModelOverloaded_(model);
-    Logger.log('Gemini audio error (HTTP ' + code + ') for model "' + model + '": ' + bodyText);
-    throw new Error('Gemini audio request failed (HTTP ' + code + '): ' + reason);
-  }
+  const { code, bodyText } = _geminiFetch_(model, payload);
+  if (code < 200 || code >= 300) _throwGeminiHttpError_(code, bodyText, model, 'audio request');
 
   let data;
   try { data = JSON.parse(bodyText); }
@@ -461,39 +464,13 @@ function callGeminiAudio_(prompt, model) {
  * @returns {{blob: GoogleAppsScript.Base.Blob, caption: string}}
  */
 function callGeminiImage_(prompt, model) {
-  const apiKey = getGeminiApiKey_();
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set in Script Properties.');
-  }
-
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-    encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
-
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
   };
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
-
-  const code     = response.getResponseCode();
-  const bodyText = response.getContentText();
-
-  if (code < 200 || code >= 300) {
-    let reason = bodyText;
-    try {
-      const errJson = JSON.parse(bodyText);
-      if (errJson && errJson.error && errJson.error.message) reason = errJson.error.message;
-    } catch (parseErr) { /* not JSON, fall back to raw text */ }
-    if (code === 503) _markGeminiModelOverloaded_(model);
-    Logger.log('Gemini image error (HTTP ' + code + ') for model "' + model + '": ' + bodyText);
-    throw new Error('Gemini image request failed (HTTP ' + code + '): ' + reason);
-  }
+  const { code, bodyText } = _geminiFetch_(model, payload);
+  if (code < 200 || code >= 300) _throwGeminiHttpError_(code, bodyText, model, 'image request');
 
   let data;
   try { data = JSON.parse(bodyText); }

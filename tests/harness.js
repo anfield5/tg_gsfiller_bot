@@ -77,8 +77,29 @@ function createProject(overrides) {
     },
     Session: { getScriptTimeZone: () => 'UTC' },
     MimeType: { GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet' },
+    // GAS's Logger.log — src/*.js calls this on API error paths (GeminiApi.js,
+    // Navigation.js's _sendMediaBlob_). A no-op is fine; tests assert on
+    // thrown errors/sent messages, not on what got logged.
+    Logger: { log() {} },
     getBotToken_: overrides.getBotToken_ || (() => 'TEST_TOKEN'),
     getGeminiApiKey_: overrides.getGeminiApiKey_ || (() => 'TEST_GEMINI_KEY'),
+  };
+
+  // Utilities.base64Decode / newBlob — used by GeminiApi.js's _pcmToWavBlob_
+  // and callGeminiImage_. Real GAS byte arrays are signed (-128..127); this
+  // mock mirrors that so tests can exercise the actual sign-normalisation
+  // logic in _pcmToWavBlob_ instead of a shortcut.
+  sandbox.Utilities.base64Decode = function (base64) {
+    const buf = Buffer.from(base64, 'base64');
+    const out = [];
+    for (let i = 0; i < buf.length; i++) {
+      const b = buf[i];
+      out.push(b > 127 ? b - 256 : b);
+    }
+    return out;
+  };
+  sandbox.Utilities.newBlob = function (bytes, mimeType, name) {
+    return { bytes: bytes, mimeType: mimeType, name: name, getContentType: () => mimeType, getName: () => name };
   };
 
   const context = vm.createContext(sandbox);
