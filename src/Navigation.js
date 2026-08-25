@@ -74,7 +74,16 @@ function _resolveFolderLabel_(folderId, folderIndex) {
   try {
     return actionGetFolderName(folderId);
   } catch (e) {
-    return 'Folder ' + (folderIndex + 1);
+    // TEMP DEBUG (remove once the "Folder N" placeholder issue is diagnosed):
+    // JSON.stringify(folderId) instead of the bare string reveals hidden
+    // characters (zero-width spaces, non-breaking spaces, smart quotes,
+    // stray whitespace) that look identical to a normal ID when eyeballed
+    // in the Apps Script editor but make DriveApp reject it as invalid.
+    // .length is included too since invisible characters are easy to miss
+    // even in the JSON-escaped form. Revert to the plain 'Folder N'
+    // fallback once the root cause is found.
+    Logger.log('Folder lookup failed for id ' + JSON.stringify(folderId) + ' (index ' + folderIndex + '): ' + e);
+    return 'Folder ' + (folderIndex + 1) + ' [len=' + folderId.length + ' ' + JSON.stringify(folderId) + ']';
   }
 }
 
@@ -1007,50 +1016,71 @@ function renderGeminiPromptRequest(chatId, state) {
 }
 
 /**
- * Sends an audio Blob to Telegram via the raw sendAudio method (needs
- * multipart/form-data upload, not the JSON-body sendMessage path). Talks
- * to the Telegram API directly via getBotToken_() rather than going
- * through TelegramApi.js's helpers, which are all built around text
- * messages.
+ * Shared implementation behind _sendAudioBlob_ / _sendPhotoBlob_: both
+ * need a multipart/form-data upload (unlike sendMessage's JSON body), so
+ * both talk to the Telegram API directly via getBotToken_() rather than
+ * through TelegramApi.js's text-only helpers. Only the method name and
+ * the payload's media field name differ between the two.
+ *
  * @param {string} chatId
+ * @param {string} method     Telegram API method, e.g. "sendAudio"
+ * @param {string} mediaField payload key the blob goes under, e.g. "audio"
  * @param {GoogleAppsScript.Base.Blob} blob
  * @param {string} [caption]
  */
-function _sendAudioBlob_(chatId, blob, caption) {
+function _sendMediaBlob_(chatId, method, mediaField, blob, caption) {
   const token   = getBotToken_();
-  const url     = 'https://api.telegram.org/bot' + token + '/sendAudio';
-  const payload = { chat_id: String(chatId), audio: blob };
+  const url     = 'https://api.telegram.org/bot' + token + '/' + method;
+  const payload = { chat_id: String(chatId) };
+  payload[mediaField] = blob;
   if (caption) payload.caption = caption.slice(0, 1024); // Telegram caption limit
 
   const response = UrlFetchApp.fetch(url, { method: 'post', payload: payload, muteHttpExceptions: true });
   const code = response.getResponseCode();
   if (code < 200 || code >= 300) {
-    Logger.log('Telegram sendAudio error (HTTP ' + code + '): ' + response.getContentText());
-    throw new Error('Failed to send audio to Telegram (HTTP ' + code + ').');
+    Logger.log('Telegram ' + method + ' error (HTTP ' + code + '): ' + response.getContentText());
+    throw new Error('Failed to send ' + mediaField + ' to Telegram (HTTP ' + code + ').');
   }
 }
 
+/** Sends an audio Blob to Telegram (TTS narration results). */
+function _sendAudioBlob_(chatId, blob, caption) {
+  _sendMediaBlob_(chatId, 'sendAudio', 'audio', blob, caption);
+}
+
 /**
- * Sends an image Blob to Telegram via the raw sendPhoto method. See
- * _sendAudioBlob_ above for why this bypasses TelegramApi.js. Not
- * reachable yet — no free image model exists (see GeminiApi.js) — but
- * ready for when one does.
- * @param {string} chatId
- * @param {GoogleAppsScript.Base.Blob} blob
- * @param {string} [caption]
+ * Sends an image Blob to Telegram. Not reachable yet — no free image
+ * model exists (see GeminiApi.js) — but ready for when one does.
  */
 function _sendPhotoBlob_(chatId, blob, caption) {
-  const token   = getBotToken_();
-  const url     = 'https://api.telegram.org/bot' + token + '/sendPhoto';
-  const payload = { chat_id: String(chatId), photo: blob };
-  if (caption) payload.caption = caption.slice(0, 1024); // Telegram caption limit
+  _sendMediaBlob_(chatId, 'sendPhoto', 'photo', blob, caption);
+}
 
-  const response = UrlFetchApp.fetch(url, { method: 'post', payload: payload, muteHttpExceptions: true });
-  const code = response.getResponseCode();
-  if (code < 200 || code >= 300) {
-    Logger.log('Telegram sendPhoto error (HTTP ' + code + '): ' + response.getContentText());
-    throw new Error('Failed to send photo to Telegram (HTTP ' + code + ').');
+/**
+ * Calls the right row/column/range action function for the current
+ * geminiType, given three type-specific functions that all share the
+ * same (fileId, sheetName, ..., userPrompt, model) calling convention.
+ * Used by handleGeminiPromptInput to avoid repeating the same row/column/
+ * range if-chain once per modality (text/audio/image).
+ *
+ * @param {Object} state
+ * @param {string} userPrompt
+ * @param {Function} rowFn
+ * @param {Function} colFn
+ * @param {Function} rangeFn
+ * @returns {*}  whatever the matched action function returns
+ */
+function _dispatchGeminiByType_(state, userPrompt, rowFn, colFn, rangeFn) {
+  if (state.geminiType === 'row') {
+    return rowFn(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
   }
+  if (state.geminiType === 'column') {
+    return colFn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
+  }
+  if (state.geminiType === 'range') {
+    return rangeFn(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
+  }
+  throw new Error('Unknown analysis type.');
 }
 
 function handleGeminiPromptInput(chatId, state, userPrompt) {
@@ -1060,40 +1090,13 @@ function handleGeminiPromptInput(chatId, state, userPrompt) {
 
   try {
     if (modality === 'audio') {
-      let audioBlob;
-      if (state.geminiType === 'row') {
-        audioBlob = actionNarrateRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
-      } else if (state.geminiType === 'column') {
-        audioBlob = actionNarrateColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
-      } else if (state.geminiType === 'range') {
-        audioBlob = actionNarrateRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
-      } else {
-        throw new Error('Unknown analysis type.');
-      }
+      const audioBlob = _dispatchGeminiByType_(state, userPrompt, actionNarrateRow, actionNarrateColumn, actionNarrateRange);
       _sendAudioBlob_(chatId, audioBlob);
     } else if (modality === 'image') {
-      let picture;
-      if (state.geminiType === 'row') {
-        picture = actionIllustrateRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
-      } else if (state.geminiType === 'column') {
-        picture = actionIllustrateColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
-      } else if (state.geminiType === 'range') {
-        picture = actionIllustrateRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
-      } else {
-        throw new Error('Unknown analysis type.');
-      }
+      const picture = _dispatchGeminiByType_(state, userPrompt, actionIllustrateRow, actionIllustrateColumn, actionIllustrateRange);
       _sendPhotoBlob_(chatId, picture.blob, picture.caption);
     } else {
-      let result;
-      if (state.geminiType === 'row') {
-        result = actionAnalyzeRow(state.fileId, state.geminiSheetName, state.geminiRowIndex, userPrompt, state.geminiModel);
-      } else if (state.geminiType === 'column') {
-        result = actionAnalyzeColumn(state.fileId, state.geminiSheetName, state.geminiColIndex, state.geminiColLabel, userPrompt, state.geminiModel);
-      } else if (state.geminiType === 'range') {
-        result = actionAnalyzeRange(state.fileId, state.geminiSheetName, state.geminiRange, userPrompt, state.geminiModel);
-      } else {
-        throw new Error('Unknown analysis type.');
-      }
+      const result = _dispatchGeminiByType_(state, userPrompt, actionAnalyzeRow, actionAnalyzeColumn, actionAnalyzeRange);
       sendLongPlainMessage(chatId, result);
     }
   } catch (e) {
