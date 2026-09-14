@@ -74,14 +74,13 @@ function _resolveFolderLabel_(folderId, folderIndex) {
   try {
     return actionGetFolderName(folderId);
   } catch (e) {
-    // TEMP DEBUG (remove once the "Folder N" placeholder issue is diagnosed):
-    // JSON.stringify(folderId) instead of the bare string reveals hidden
-    // characters (zero-width spaces, non-breaking spaces, smart quotes,
-    // stray whitespace) that look identical to a normal ID when eyeballed
-    // in the Apps Script editor but make DriveApp reject it as invalid.
-    // .length is included too since invisible characters are easy to miss
-    // even in the JSON-escaped form. Revert to the plain 'Folder N'
-    // fallback once the root cause is found.
+    // The error text is appended right in the button label (not just
+    // logged) so a bad folder ID is diagnosable straight from Telegram —
+    // no need to dig through Apps Script Executions. JSON.stringify(folderId)
+    // (rather than the bare string) surfaces hidden characters (zero-width
+    // spaces, smart quotes, stray whitespace) that look identical to a
+    // valid ID when eyeballed in the Config.gs editor but make DriveApp
+    // reject it. Invisible when everything resolves normally.
     Logger.log('Folder lookup failed for id ' + JSON.stringify(folderId) + ' (index ' + folderIndex + '): ' + e);
     return 'Folder ' + (folderIndex + 1) + ' [len=' + folderId.length + ' ' + JSON.stringify(folderId) + ']';
   }
@@ -89,26 +88,27 @@ function _resolveFolderLabel_(folderId, folderIndex) {
 
 /**
  * True when the field at `idx` is a formula cell that gets auto-filled
- * (never prompted to the user) during the add-row flow.
+ * (never prompted to the user) during the add-row flow. Reads a flag
+ * precomputed once (in a single batched Sheets call) by handleAddStart —
+ * never re-checks Sheets per field.
  * @param {Object} state
  * @param {number} idx  0-based header index
  * @returns {boolean}
  */
 function _isFormulaField_(state, idx) {
-  return !!state.lastRowValues &&
-    isCellFormula(state.fileId, state.sheetName, state.lastRowIndex, idx + 1);
+  return !!(state.formulaFlags && state.formulaFlags[idx]);
 }
 
 /**
  * True when the field at `idx` is a trailing merged cell that gets skipped
- * (never prompted to the user) during the add-row flow.
+ * (never prompted to the user) during the add-row flow. Reads a flag
+ * precomputed once by handleAddStart — never re-checks Sheets per field.
  * @param {Object} state
  * @param {number} idx  0-based header index
  * @returns {boolean}
  */
 function _isMergeShadowField_(state, idx) {
-  return !!state.lastRowValues && state.lastRowIndex > 1 &&
-    isCellTrailingMerge(state.fileId, state.sheetName, state.lastRowIndex, idx + 1);
+  return !!(state.mergeShadowFlags && state.mergeShadowFlags[idx]);
 }
 
 /** True when the field at `idx` is auto-filled and therefore never prompted. */
@@ -450,6 +450,27 @@ function handleAddStart(chatId) {
   state.formData          = {};
   state.lastRowValues     = (lastRows.length > 0) ? lastRows[0].values : null;
   state.lastRowIndex      = (lastRows.length > 0) ? lastRows[0].rowIndex : 1;
+
+  // Precompute which columns are auto-filled (formula / merge-shadow) ONCE
+  // here, in 2 batched Sheets calls total. Previously _isFormulaField_ /
+  // _isMergeShadowField_ re-opened the sheet and checked one cell at a time
+  // as the user stepped through each field of the form — up to 2 Sheets API
+  // calls per field, spread across N separate Telegram round-trips, adding
+  // real latency to a flow that's supposed to feel instant. Stored in state
+  // (not re-derived) so the rest of the add-flow never touches Sheets again
+  // until the final save.
+  state.formulaFlags     = [];
+  state.mergeShadowFlags = [];
+  if (state.lastRowValues && state.lastRowIndex > 1 && headers.length > 0) {
+    try {
+      state.formulaFlags = getRowFormulaFlags(state.fileId, state.sheetName, state.lastRowIndex, headers.length);
+    } catch (e) { /* best-effort — falls back to "not auto-filled", same as before */ }
+    try {
+      getRowMergedRanges(state.fileId, state.sheetName, state.lastRowIndex, headers.length).forEach(function (m) {
+        for (let c = m.firstCol + 1; c <= m.lastCol; c++) state.mergeShadowFlags[c - 1] = true;
+      });
+    } catch (e) { /* best-effort */ }
+  }
 
   sendFieldPrompt(chatId, state);
 }

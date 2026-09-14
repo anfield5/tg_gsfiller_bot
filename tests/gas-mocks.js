@@ -145,6 +145,15 @@ function makeRangeMock(sheet, row, col, numRows, numCols) {
       }));
     },
     getFormula() { return cellFormula(row, col); },
+    getFormulas() {
+      const out = [];
+      for (let r = row; r < row + numRows; r++) {
+        const rowOut = [];
+        for (let c = col; c < col + numCols; c++) rowOut.push(cellFormula(r, c));
+        out.push(rowOut);
+      }
+      return out;
+    },
     getValue() { return cellValue(row, col); },
     isPartOfMerge() { return overlappingMerges().length > 0; },
     getColumn: () => col,

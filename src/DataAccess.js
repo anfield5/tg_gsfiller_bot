@@ -15,7 +15,9 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Returns folder {id, name}. Name is cached for 10 minutes.
+ * Returns folder {id, name}. Name is cached for 1 hour — top-level folder
+ * IDs are hardcoded in Config.js and essentially never renamed, so there's
+ * no benefit to re-checking Drive more often than that.
  * @param {string} folderId
  * @returns {{ id: string, name: string }}
  */
@@ -26,7 +28,7 @@ function getFolderInfo(folderId) {
   if (cached) return { id: folderId, name: cached };
 
   const name = DriveApp.getFolderById(folderId).getName();
-  try { cache.put(cacheKey, name, 600); } catch (e) { /* ignore */ }
+  try { cache.put(cacheKey, name, 3600); } catch (e) { /* ignore */ }
   return { id: folderId, name: name };
 }
 
@@ -65,7 +67,12 @@ function listSpreadsheetsInFolder(folderId, forceRefresh) {
   files.sort((a, b) => a.name.localeCompare(b.name));
 
   try {
-    cache.put(cacheKey, JSON.stringify(files), CONFIG.FOLDER_CACHE_TTL_SECONDS || 300);
+    // Default bumped from 5 min to 1 hour: subfolder contents (which
+    // spreadsheets exist where) change far less often than the row data
+    // inside them, so re-scanning Drive every 5 minutes was paying for
+    // freshness nobody needed. Override via CONFIG.FOLDER_CACHE_TTL_SECONDS
+    // if a given setup genuinely adds/removes files more often than that.
+    cache.put(cacheKey, JSON.stringify(files), CONFIG.FOLDER_CACHE_TTL_SECONDS || 3600);
   } catch (e) {
     console.error('Cache write error (folderFiles): ' + e);
   }
@@ -171,10 +178,13 @@ function getHeaderRow(fileId, sheetName) {
  * @returns {Array<{rowIndex: number, values: string[]}>}
  */
 function getLastRows(fileId, sheetName, n) {
-  const sheet   = _getSheet_(fileId, sheetName);
-  const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
-  if (lastRow < 2 || lastCol === 0) return [];
+  const sheet    = _getSheet_(fileId, sheetName);
+  const lastCol  = sheet.getLastColumn();
+  const rawLastRow = sheet.getLastRow();
+  if (rawLastRow < 2 || lastCol === 0) return [];
+
+  const lastRow = _findLastNonEmptyRow_(sheet, rawLastRow, lastCol);
+  if (lastRow < 2) return [];
 
   const startRow    = Math.max(2, lastRow - n + 1);
   const numRows     = lastRow - startRow + 1;
@@ -187,6 +197,45 @@ function getLastRows(fileId, sheetName, n) {
 
   rows.reverse();
   return rows;
+}
+
+// How many rows to look back, at most, when hunting for the real last
+// data row below sheet.getLastRow(). Bounded to keep this a single cheap
+// batched read even when the phantom gap is large, rather than scanning
+// the whole sheet.
+const LAST_ROW_SCAN_WINDOW_ = 200;
+
+/**
+ * sheet.getLastRow() reports the last row with ANY content or formatting
+ * ever applied — not necessarily the last row with actual data. A stray
+ * click/format far below the real data (easy to do by accident) inflates
+ * it, which then feeds a "last row" full of blank cells into getLastRows()
+ * — silently breaking both the "Use last value" buttons (blank string
+ * never passes the non-empty check) and the formula/merge auto-skip in
+ * the add-row flow (isCellFormula/isCellTrailingMerge check the wrong,
+ * blank row). This walks backward from getLastRow() — capped at
+ * LAST_ROW_SCAN_WINDOW_ rows, one batched read — to find the last row
+ * that actually has a value in at least one of the first `lastCol` columns.
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {number} rawLastRow  sheet.getLastRow()
+ * @param {number} lastCol
+ * @returns {number} the real last non-empty row, or 1 (header only) if
+ *   nothing non-empty was found within the scan window
+ */
+function _findLastNonEmptyRow_(sheet, rawLastRow, lastCol) {
+  const windowSize = Math.min(LAST_ROW_SCAN_WINDOW_, rawLastRow - 1); // never touch row 1 (header)
+  if (windowSize <= 0) return 1;
+
+  const startRow = rawLastRow - windowSize + 1;
+  const values   = sheet.getRange(startRow, 1, windowSize, lastCol).getDisplayValues();
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (values[i].some((v) => String(v).trim().length > 0)) {
+      return startRow + i;
+    }
+  }
+  return 1; // everything in the scan window was blank
 }
 
 /**
@@ -331,6 +380,29 @@ function isCellFormula(fileId, sheetName, rowIndex, colIndex) {
 }
 
 /**
+ * Returns which columns [1..numCols] of a row contain a formula, in ONE
+ * batched read instead of numCols separate isCellFormula() calls. Used by
+ * actionAddRow (SheetActions.js) to decide which template-row columns to
+ * replicate onto a newly appended row without an N+1 Sheets API call per
+ * column.
+ *
+ * @param {string} fileId
+ * @param {string} sheetName
+ * @param {number} rowIndex
+ * @param {number} numCols
+ * @returns {boolean[]} 0-indexed, true at position i means column i+1 has a formula
+ */
+function getRowFormulaFlags(fileId, sheetName, rowIndex, numCols) {
+  try {
+    const formulas = _getSheet_(fileId, sheetName).getRange(rowIndex, 1, 1, numCols).getFormulas()[0];
+    return formulas.map((f) => !!(f && f.toString().trim().startsWith('=')));
+  } catch (e) {
+    console.error('getRowFormulaFlags failed: ' + e);
+    return new Array(numCols).fill(false);
+  }
+}
+
+/**
  * Returns true when the cell is part of a horizontal merge where the
  * top-left anchor is to the LEFT of this column — i.e. this cell is a
  * trailing "shadow" of a merge and should be skipped during row rendering.
@@ -408,6 +480,28 @@ function mergeRowRange(fileId, sheetName, rowIndex, firstCol, numCols) {
 // Private helpers
 // ---------------------------------------------------------------------------
 
+// In-process memo for _getSheet_, scoped to a single script execution (see
+// resetSheetMemo_ below). A single incoming Telegram update commonly calls
+// _getSheet_ many times for the same fileId+sheetName — e.g. actionAddRow
+// alone opens it once directly, once per column via isCellFormula(), again
+// per formula column via copyFormulaDown(), and once more via
+// getRowMergedRanges() — each previously a fresh, relatively expensive
+// SpreadsheetApp.openById() + getSheetByName() round-trip. The returned
+// Sheet is a live handle (not a data snapshot), so reusing it within one
+// execution changes nothing about correctness, only how many times the
+// spreadsheet gets reopened.
+let _sheetMemo_ = {};
+
+/**
+ * Clears the per-execution sheet memo. Call once at the very top of
+ * doPost() so memoized handles never carry over between Telegram updates
+ * (defensive — Apps Script execution reuse across invocations isn't
+ * something to rely on either way).
+ */
+function resetSheetMemo_() {
+  _sheetMemo_ = {};
+}
+
 /**
  * Opens and returns a sheet, or throws if it doesn't exist.
  * Note: this function is PRIVATE — prefix "_" signals internal use only.
@@ -418,9 +512,14 @@ function mergeRowRange(fileId, sheetName, rowIndex, firstCol, numCols) {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function _getSheet_(fileId, sheetName) {
+  const key = fileId + '' + sheetName;
+  if (_sheetMemo_[key]) return _sheetMemo_[key];
+
   const ss    = SpreadsheetApp.openById(fileId);
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) throw new Error('Sheet "' + sheetName + '" not found.');
+
+  _sheetMemo_[key] = sheet;
   return sheet;
 }
 

@@ -111,3 +111,55 @@ test('actionAddRow replicates horizontal merges from the template row onto the n
   assert.equal(newRowMerge.col, 1);
   assert.equal(newRowMerge.numCols, 2);
 });
+
+test('actionAddRow reads the template row\'s formulas in one batched call, not one per column', () => {
+  // 5 columns, only column 3 has a formula — before the getRowFormulaFlags_
+  // optimization this used to cost 5 separate isCellFormula() opens just to
+  // find that out.
+  const sheet = {
+    name: 'Sheet1',
+    values: [
+      ['A', 'B', 'C', 'D', 'E'],
+      ['a', 'b', 'c', 'd', 'e'],
+    ],
+    formulas: { '2,3': '=UPPER(A2)' },
+    merges: [],
+  };
+  const { context } = createProject({
+    files: ['Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+
+  let opens = 0;
+  const realSpreadsheetApp = context.SpreadsheetApp;
+  context.SpreadsheetApp = {
+    CopyPasteType: realSpreadsheetApp.CopyPasteType,
+    openById(id) { opens++; return realSpreadsheetApp.openById(id); },
+  };
+
+  const headers = ['A', 'B', 'C', 'D', 'E'];
+  context.actionAddRow('file1', 'Sheet1', { A: '1', B: '2', C: context.formulaPlaceholderText_(), D: '4', E: '5' }, headers);
+
+  assert.equal(sheet.formulas['3,3'], '=UPPER(A2)', 'the one formula column was still copied down correctly');
+  // _getSheet_ is memoized per execution (resetSheetMemo_ resets it between
+  // Telegram updates, not within one actionAddRow call), so the whole
+  // append+formula-copy+merge-copy sequence should open the spreadsheet once.
+  assert.equal(opens, 1, 'SpreadsheetApp.openById should be memoized across the whole actionAddRow call');
+});
+
+test('_getSheet_ memo is cleared by resetSheetMemo_ (simulates a fresh doPost)', () => {
+  const { context } = projectWithSheet({ name: 'Sheet1', values: [['A', 'B']] });
+  let opens = 0;
+  const realSpreadsheetApp = context.SpreadsheetApp;
+  context.SpreadsheetApp = {
+    openById(id) { opens++; return realSpreadsheetApp.openById(id); },
+  };
+
+  context.actionGetHeaders('file1', 'Sheet1'); // headers cache is separate from the sheet memo — force a real open
+  context._getSheet_('file1', 'Sheet1');
+  assert.equal(opens, 1, 'second _getSheet_ call within the same execution should reuse the memoized handle');
+
+  context.resetSheetMemo_();
+  context._getSheet_('file1', 'Sheet1');
+  assert.equal(opens, 2, 'a fresh execution (post-reset) must not reuse a handle from a previous update');
+});

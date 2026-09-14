@@ -35,8 +35,10 @@ const CONFIG = {
   // Spreadsheets listed per page in the file picker.
   FILES_PER_PAGE: 10,
 
-  // How long a folder's file listing is cached, in seconds.
-  FOLDER_CACHE_TTL_SECONDS: 300,
+  // How long a folder's file listing is cached, in seconds. Lower this if
+  // you add/remove spreadsheets in your folders more than once an hour;
+  // raise it further if your folder structure is essentially static.
+  FOLDER_CACHE_TTL_SECONDS: 3600,
 
   // Optional: override any subset of the bot's emoji. Unset keys fall back
   // to DEFAULT_ICONS in Icons.js. Example:

@@ -1,8 +1,9 @@
 # Telegram → Google Sheets navigator bot
 
 A Telegram bot (Google Apps Script, V8) that lets you browse a fixed set of
-Google Drive folders, open a spreadsheet, pick a sheet tab, and add or edit
-rows — all from your phone, without opening Drive.
+Google Drive folders, open a spreadsheet, pick a sheet tab, add or edit rows,
+and ask Gemini to analyze (or narrate) your data — all from your phone,
+without opening Drive.
 
 Runs entirely under your own Google account (no OAuth flow, no per-user
 tokens): the script uses `DriveApp` / `SpreadsheetApp` as *you*, the deployer.
@@ -11,16 +12,16 @@ tokens): the script uses `DriveApp` / `SpreadsheetApp` as *you*, the deployer.
 
 ```
 src/
-  Code.js             entry point, doPost() routing
+  Code.js              entry point, doPost() routing
   Config.js.example    template — copy to Config.js (gitignored) and fill in
   Icons.js             all UI emoji in one place, with CONFIG.ICONS overrides
   State.js             per-user state (PropertiesService)
   Navigation.js        screens & the step-by-step flow
   SheetActions.js      business logic, calls DataAccess.js only
   DataAccess.js        the ONLY file that touches DriveApp/SpreadsheetApp
-  TelegramApi.js        sendMessage / sendMessageWithKeyboard / escapeHtml_
-  GeminiApi.js          thin wrapper around the Gemini generateContent API
-  GeminiActions.js      builds the data dump + prompt, calls GeminiApi.js
+  TelegramApi.js       sendMessage / sendMessageWithKeyboard / escapeHtml_
+  GeminiApi.js         Gemini generateContent wrapper + live model listing
+  GeminiActions.js     builds the data dump + prompt, calls GeminiApi.js
   appsscript.json      manifest (scopes, runtime, web app config)
 cloudflare-relay/
   worker.js            optional relay in front of the Apps Script /exec URL
@@ -38,8 +39,12 @@ need to touch.
 ## Setup
 
 1. Copy `src/Config.js.example` to `src/Config.js` (gitignored — it holds
-   folder IDs and your bot-token accessor) and fill in `FOLDER_IDS`.
-2. In the Apps Script editor, set two Script Properties (Project Settings →
+   folder IDs and your bot-token accessor) and fill in `FOLDER_IDS` with your
+   own Drive folder IDs. **`Config.js` is the single source of truth** —
+   don't hand-edit `Config.gs` directly in the Apps Script browser editor,
+   `clasp push` will silently overwrite it with this file's contents on the
+   next push of anything else.
+2. In the Apps Script editor, set Script Properties (Project Settings →
    Script Properties): `BOT_TOKEN` (your Telegram bot token) and `ADMIN_IDS`
    (comma-separated list of Telegram chat IDs allowed to use the bot).
 3. If you want the Gemini Analysis button, also set `GEMINI_API_KEY` (from
@@ -56,22 +61,40 @@ need to touch.
 6. Call `setWebhook('<your relay or /exec URL>')` once from the Apps Script
    editor.
 
+### Pushing changes — remember the two-step deploy
+
+`clasp push -f` only updates the **draft** shown in the online editor. The
+live web app (whatever URL your webhook actually points to — check with
+`getWebhookInfo`) keeps running whatever code was live at its **last
+deployed version** until you explicitly update it:
+
+**Deploy → Manage deployments → (pencil icon on the existing deployment) →
+Version: New Version → Deploy.**
+
+Editing code and hitting Cmd/Ctrl+S in the browser editor does *not* create
+a new version by itself — only a deployment update does. This trips people
+up constantly; if a fix "isn't showing up" after a push, this is almost
+always why.
+
 ## Configuration (`Config.js`)
 
 | Key | Meaning |
 | --- | --- |
 | `FOLDER_IDS` | Drive folder IDs shown as top-level menu options |
 | `FOLDER_LABELS` | Optional display name per folder (same order as `FOLDER_IDS`); falls back to the live Drive folder name if omitted |
-| `FOLDER_SCAN_DEPTH` | How many levels of subfolders to scan for spreadsheets, in addition to the folder itself. `0` = folder only, `1` = folder + immediate subfolders (previous hardcoded behavior, still the default), `2`+ = deeper. Higher values cost more Drive API calls per uncached folder open |
+| `FOLDER_SCAN_DEPTH` | How many levels of subfolders to scan for spreadsheets, in addition to the folder itself. `0` = folder only, `1` = folder + immediate subfolders (default), `2`+ = deeper. Higher values cost more Drive API calls per uncached folder open |
 | `FILES_PER_PAGE` | Spreadsheets listed per page in the file picker |
-| `FOLDER_CACHE_TTL_SECONDS` | How long a folder's file listing is cached |
+| `FOLDER_CACHE_TTL_SECONDS` | How long a folder's file listing is cached. Default is 1 hour — folder *structure* (which spreadsheets exist where) usually changes far less often than the row data inside them, so there's little reason to re-scan Drive more frequently. Lower it if you add/remove spreadsheets often |
 | `ICONS` | Optional partial override of the bot's emoji (see below) |
-| `GEMINI_MODEL` | Gemini model used by the Gemini Analysis button, e.g. `gemini-2.5-flash` |
+| `GEMINI_MODEL` | Fallback model id used only if `callGemini_` is ever invoked without an explicit model (normal flow always passes whatever the user picked in the model picker — see below) |
 | `GEMINI_MAX_ROWS` | Safety cap on rows sent to Gemini per request (large columns/ranges are truncated, and the response says so) |
+| `GEMINI_MODEL_CACHE_TTL_SECONDS` | How long the fetched+filtered model list is cached (default 6h, capped at 21600s by `CacheService`). The picker's Refresh button bypasses this |
+| `GEMINI_TTS_VOICE` | Prebuilt voice name for audio narration (default `'Kore'`) — see [Gemini's voice list](https://ai.google.dev/gemini-api/docs/speech-generation) |
+| `GEMINI_EXTRA_FREE_MODELS` | Extend the free-tier allowlist beyond the built-in list — array of `{ prefix, modality, category }`, same shape as `DEFAULT_FREE_MODELS_` in `GeminiApi.js` |
 
-`ADMIN_IDS` and `BOT_TOKEN` are **not** set in `Config.js` — they live in
-Script Properties so they can be rotated without a deploy and never risk
-being committed.
+`ADMIN_IDS` and `BOT_TOKEN` (and `GEMINI_API_KEY`) are **not** set in
+`Config.js` — they live in Script Properties so they can be rotated without
+a deploy and never risk being committed.
 
 ### Icons
 
@@ -95,8 +118,12 @@ keep working unchanged after pulling an update to this file.
 ## Add-row flow
 
 Fields are prompted one at a time, in header order. Formula columns and
-trailing merged cells are detected from the previous row and auto-filled
-without prompting.
+trailing merged cells are detected from the previous ("template") row and
+auto-filled without prompting — this detection is computed **once**, in a
+couple of batched Sheets reads, right when the flow starts (`handleAddStart`
+in `Navigation.js`), and stored in the per-user state. Stepping through the
+rest of the form afterwards touches Sheets APIs zero more times until the
+final save, which used to be one Sheets round-trip per field.
 
 A **Previous** button appears to the left of Cancel as soon as there is an
 earlier field to go back to, and is hidden on the very first prompted field.
@@ -104,51 +131,112 @@ Pressing it returns to the nearest field you actually answered — skipping
 back over any auto-filled formula/merge columns — and clears that field so
 you can re-enter it.
 
+If the "Use last value" / "Edit last value" buttons ever disappear along
+with the formula auto-skip, together, that's a strong signal `sheet.getLastRow()`
+is reporting an inflated "phantom" row (Sheets counts the last row that ever
+had content *or formatting*, not the last row with real data — an accidental
+click/format far below your real data can trigger this). `getLastRows` in
+`DataAccess.js` guards against this by scanning back through
+`LAST_ROW_SCAN_WINDOW_` (200) rows to find the true last non-empty row rather
+than trusting `getLastRow()` blindly.
+
 ## Gemini Analysis
 
 On the "Tabs in ..." screen (a document is chosen, a tab isn't yet) there's
-a **Gemini Analysis** button, above Fav Doc. It starts its own short flow:
+a **Gemini Analysis** button, above Fav Doc. It starts its own flow:
 
-1. Pick which tab to analyze.
-2. Pick what to look at: **Row** (a row number), **Column** (pick from the
+1. **Pick a model.** The list is fetched live from Gemini's `ListModels` API
+   (`listGeminiModels_` in `GeminiApi.js`), filtered down to a free-tier
+   allowlist (`DEFAULT_FREE_MODELS_` — Google exposes no "is this free"
+   field, so this is manually curated against the
+   [pricing page](https://ai.google.dev/gemini-api/docs/pricing)), grouped
+   under category headers (fast & cheap / deep reasoning & coding / agentic
+   / general / audio narration / image generation), and laid out 2 buttons
+   per row. Cached for `GEMINI_MODEL_CACHE_TTL_SECONDS`; a **Refresh** button
+   bypasses the cache and re-checks live availability against the same
+   allowlist (it does not re-verify pricing — that part is still the
+   hardcoded allowlist). A model that returned an HTTP 503 ("high demand")
+   from this bot within the last 5 minutes gets a "(busy)" warning badge —
+   there's no live overload-status API, so this is purely this bot's own
+   recent-call memory, not a guarantee either way.
+2. Pick which tab to analyze.
+3. Pick what to look at: **Row** (a row number), **Column** (pick from the
    header list), or **Range** (type an A1 range like `A2:C10`).
-3. Type free-form instructions for Gemini — filtering is just part of what
+4. Type free-form instructions for Gemini — filtering is just part of what
    you ask for in plain language (e.g. "only rows where Status is Done,
    then summarise the totals"); the bot doesn't pre-filter rows itself, it
    sends the data plus your instructions and lets Gemini apply them.
 
-The result comes back as a plain-text Telegram message (chunked if it's
-long) — never `parse_mode: HTML`, since model output is arbitrary text that
-must never be able to break message delivery or be misread as markup.
+**Output modality** depends on the model picked in step 1:
+- **Text models** — result comes back as a plain-text Telegram message
+  (chunked if long) — never `parse_mode: HTML`, since model output is
+  arbitrary text that must never be misread as markup.
+- **Audio models** (currently `gemini-2.5-flash-preview-tts`) — the answer
+  is narrated instead of typed out. Gemini returns raw PCM audio with no
+  container format; `_pcmToWavBlob_` wraps it in a WAV header by hand (Apps
+  Script has no native audio encoding) before sending it via Telegram's
+  `sendAudio`.
+- **Image models** — plumbing exists (`callGeminiImage_`, Telegram
+  `sendPhoto`) but isn't reachable from the picker yet: no free
+  image-generation Gemini model exists as of this writing. Enabling one
+  later, once Google ships one, is a one-line addition to
+  `DEFAULT_FREE_MODELS_` — no code changes needed.
 
 Requires `GEMINI_API_KEY` in Script Properties; without it, the button still
-appears but the final step returns a clear error instead of failing silently.
+appears but the model-fetch step returns a clear error instead of failing
+silently.
+
+## Performance notes
+
+- **`_getSheet_` is memoized per execution** (`DataAccess.js`). A single
+  incoming Telegram update can call it many times for the same
+  file+sheet — `actionAddRow` alone used to reopen the spreadsheet once per
+  column just to check for formulas, then again per formula column to copy
+  them, then again for merges. The memo is reset at the top of every
+  `doPost()` (`resetSheetMemo_()` in `Code.js`) so nothing carries over
+  between updates.
+- **Formula detection is batched.** `getRowFormulaFlags` reads an entire
+  row's formulas in one `getFormulas()` call instead of one
+  `isCellFormula()` call per column.
+- **Folder/name caches default to 1 hour** (`FOLDER_CACHE_TTL_SECONDS`, and
+  the folder-name cache in `getFolderInfo`) rather than 5–10 minutes, since
+  folder *structure* changes far less often than the data inside the
+  spreadsheets. Lower `FOLDER_CACHE_TTL_SECONDS` in `Config.js` if your setup
+  genuinely adds/removes files more often than that.
+- None of this removes the underlying cost of a cold Drive/Sheets API call
+  on a cache miss — `DriveApp`/`SpreadsheetApp` are inherently slow relative
+  to most APIs, and that's a platform characteristic, not something app code
+  can fix. The above changes only avoid *redundant* calls; if a folder is
+  genuinely large (many files/subfolders) or hasn't been opened in over an
+  hour, the first request after that will still take a few seconds.
 
 ## Testing
 
 Tests run against Node's built-in test runner, with hand-written mocks for
 the Google Apps Script services (`DriveApp`, `SpreadsheetApp`, `CacheService`,
-`PropertiesService`, `LockService`, `UrlFetchApp`) — no external
-dependencies, no `node_modules`. `src/*.js` files are plain global-scope
-scripts (Apps Script has no module system), so `tests/harness.js` loads them
-into a shared `vm` context and tests call the resulting global functions
-directly (e.g. `context.handleAddStart(chatId)`).
+`PropertiesService`, `LockService`, `UrlFetchApp`, `Utilities`, `Logger`) — no
+external dependencies, no `node_modules`. `src/*.js` files are plain
+global-scope scripts (Apps Script has no module system), so `tests/harness.js`
+loads them into a shared `vm` context and tests call the resulting global
+functions directly (e.g. `context.handleAddStart(chatId)`).
 
 ```sh
 npm test
 ```
 
 Coverage includes: formula-injection sanitisation, date normalisation,
-column-letter conversion, HTML escaping (the fix that stops raw cell values
-like `"R&D"` or `"5 < 10"` from breaking Telegram's `parse_mode: HTML`
-delivery), icon default/override resolution, recursive folder scanning at
-each `FOLDER_SCAN_DEPTH`, two-row/merged header parsing, formula and merge
-replication on add-row, an end-to-end test of the Previous-button
-navigation (including that it's hidden on the first field and correctly
-skips auto-filled columns), A1-range parsing, column/range extraction with
-truncation at `GEMINI_MAX_ROWS`, a mocked Gemini API call (success, HTTP
-error, safety-block, empty-response), and an end-to-end test of the Gemini
-Analysis flow (button position, all three selection types, and that model
+column-letter conversion, HTML escaping, icon default/override resolution,
+recursive folder scanning at each `FOLDER_SCAN_DEPTH`, two-row/merged header
+parsing, formula and merge replication on add-row (including a regression
+test for the `getLastRow()` "phantom row" bug and one proving the sheet-open
+count stays flat across the whole add-row flow), an end-to-end test of the
+Previous-button navigation, A1-range parsing, column/range extraction with
+truncation at `GEMINI_MAX_ROWS`, the Gemini model-picker allowlist
+(including a regression test for a prefix-matching bug that let unrelated
+paid models slip through), model list fetching/caching/categorization,
+overload-tracking on HTTP 503, audio (`callGeminiAudio_`) and image
+(`callGeminiImage_`) generation, and an end-to-end test of the full Gemini
+Analysis flow (model picker, all three selection types, and that model
 output is always sent without `parse_mode`).
 
 ## Known limitations
@@ -160,4 +248,8 @@ output is always sent without `parse_mode`).
   supported but off by default; enable it if the relay URL could otherwise
   be discovered.
 - Gemini Analysis has no per-user rate limiting — each request costs a
-  Gemini API call; keep that in mind if several people share ADMIN_IDS.
+  Gemini API call; keep that in mind if several people share `ADMIN_IDS`.
+- The free-tier model allowlist is manually curated and can drift from
+  reality if Google changes pricing/availability — use the picker's Refresh
+  button, and update `DEFAULT_FREE_MODELS_` in `GeminiApi.js` if a model you
+  expect to see is missing or a model you don't have access to appears.

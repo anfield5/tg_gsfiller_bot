@@ -107,11 +107,13 @@ function actionAddRow(fileId, sheetName, formData, headers) {
     if (templateRow < 2) return; // nothing to replicate from (row 1 is headers)
 
     // --- 2. Copy formulas from the template row ---
-    for (let col = 1; col <= headers.length; col++) {
-      if (isCellFormula(fileId, sheetName, templateRow, col)) {
-        copyFormulaDown(fileId, sheetName, templateRow, targetRow, col);
-      }
-    }
+    // One batched read for the whole row instead of one isCellFormula()
+    // Sheets API call per column — meaningful for wide sheets, since this
+    // used to be N calls just to find out WHICH columns need copying.
+    const formulaFlags = getRowFormulaFlags(fileId, sheetName, templateRow, headers.length);
+    formulaFlags.forEach((hasFormula, i) => {
+      if (hasFormula) copyFormulaDown(fileId, sheetName, templateRow, targetRow, i + 1);
+    });
 
     // --- 3. Mirror horizontal merges from the template row ---
     const merges = getRowMergedRanges(fileId, sheetName, templateRow, headers.length);

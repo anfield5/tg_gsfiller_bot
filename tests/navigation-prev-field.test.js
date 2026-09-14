@@ -133,3 +133,33 @@ test('Previous on a field with no earlier prompted field is a safe no-op', () =>
   assert.equal(after, 0, 'pressing Previous on the first field must not move the index or throw');
   assert.ok(urlFetch.calls.length > 0, 'the prompt should still be re-rendered, not silently dropped');
 });
+
+test('add-row flow only opens the sheet once per step, not once per field — formula/merge status is precomputed at handleAddStart', () => {
+  const { context } = setupProject();
+  const chatId = '111';
+  context.setState(chatId, {
+    step: 'sheet_menu', folderIndex: 0, folderId: 'folderA', folderName: 'Test Folder',
+    fileId: 'file1', fileName: 'Test Sheet', sheetName: 'Sheet1',
+  });
+
+  let opens = 0;
+  const realSpreadsheetApp = context.SpreadsheetApp;
+  context.SpreadsheetApp = {
+    CopyPasteType: realSpreadsheetApp.CopyPasteType,
+    openById(id) { opens++; return realSpreadsheetApp.openById(id); },
+  };
+
+  // handleAddStart reads headers (own cache), last-row values, formula
+  // flags and merge ranges — a small, fixed number of opens regardless of
+  // how many fields the sheet has.
+  context.handleAddStart(chatId);
+  const opensAfterStart = opens;
+  assert.ok(opensAfterStart <= 3, 'handleAddStart should be a handful of batched calls, not one per column');
+
+  // Stepping through the rest of the form (Name -> auto-skip Total -> Notes)
+  // must not touch Sheets again at all — _isFormulaField_/_isMergeShadowField_
+  // now just read state.formulaFlags/mergeShadowFlags computed above.
+  context.handleAddFieldInput(chatId, context.getState(chatId), 'Bob');
+  context.handleAddFieldInput(chatId, context.getState(chatId), 'a note');
+  assert.equal(opens, opensAfterStart, 'no further Sheets opens should happen while stepping through fields');
+});

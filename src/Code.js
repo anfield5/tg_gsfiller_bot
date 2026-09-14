@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 function doPost(e) {
+  resetSheetMemo_(); // see DataAccess.js — never carry a stale sheet handle into a new update
   try {
     const update = JSON.parse(e.postData.contents);
     if (update.message) handleMessage(update.message);

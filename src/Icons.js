@@ -51,7 +51,6 @@ const DEFAULT_ICONS = {
   // Status
   WARNING: '⚠️',
   DENIED:  '🚫',
-  GEMINI: '✨',
 };
 
 let _iconsCache = null;

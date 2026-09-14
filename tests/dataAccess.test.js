@@ -134,3 +134,81 @@ test('forceRefresh bypasses the cache', () => {
   project.context.listSpreadsheetsInFolder('root', true);
   assert.equal(driveCalls, 2);
 });
+
+// ---------------------------------------------------------------------------
+// getLastRows — sheet.getLastRow() "phantom row" regression
+//
+// sheet.getLastRow() reports the last row that ever had content OR
+// formatting, not the last row with actual data — a stray click/format far
+// below the real data inflates it. That silently broke both the "Use last
+// value" buttons (blank last row never passes the non-empty check in
+// Navigation.js) and the add-row formula/merge auto-skip (isCellFormula
+// checked the wrong, blank row) — a real bug caught live. getLastRows must
+// walk back to the true last non-empty row before returning.
+// ---------------------------------------------------------------------------
+
+function sheetWithRows(dataRows, trailingBlankRows) {
+  const values = [['Name', 'Total']].concat(dataRows);
+  for (let i = 0; i < (trailingBlankRows || 0); i++) values.push(['', '']);
+  return { name: 'Sheet1', values };
+}
+
+test('getLastRows returns the real last row when there is no phantom gap', () => {
+  const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200']]);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  const rows = context.getLastRows('file1', 'Sheet1', 1);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].rowIndex, 3);
+  assert.deepEqual(rows[0].values, ['Bob', '200']);
+});
+
+test('getLastRows skips trailing blank "phantom" rows left by stray formatting', () => {
+  // Real data ends at row 3 ("Bob"); rows 4-8 are blank but still count
+  // toward sheet.getLastRow() in real Sheets (and in this mock, which
+  // mirrors that by using the raw values array length).
+  const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200']], 5);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+
+  const rows = context.getLastRows('file1', 'Sheet1', 1);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].rowIndex, 3, 'must resolve to the real last data row, not the inflated phantom row');
+  assert.deepEqual(rows[0].values, ['Bob', '200']);
+});
+
+test('getLastRows(n=2) still returns newest-first after skipping a phantom gap', () => {
+  const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200'], ['Cara', '300']], 4);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  const rows = context.getLastRows('file1', 'Sheet1', 2);
+  assert.deepEqual(rows.map((r) => r.values), [['Cara', '300'], ['Bob', '200']]);
+});
+
+test('getLastRows returns [] when everything within the scan window is blank', () => {
+  // Header + 10 blank rows, nothing real to find within the lookback window.
+  const sheet = sheetWithRows([], 10);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  assert.deepEqual(context.getLastRows('file1', 'Sheet1', 1), []);
+});
+
+test('_findLastNonEmptyRow_ is capped to LAST_ROW_SCAN_WINDOW_ rows — a single bounded read, not a full-sheet scan', () => {
+  // Real data at row 3, but the phantom gap (300 blank rows) is far wider
+  // than the scan window, so the real row is legitimately out of reach —
+  // this documents the bound rather than scanning arbitrarily far back.
+  const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200']], 300);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  assert.deepEqual(context.getLastRows('file1', 'Sheet1', 1), []);
+});
