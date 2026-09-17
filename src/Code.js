@@ -9,8 +9,12 @@
 // ---------------------------------------------------------------------------
 
 function doPost(e) {
-  resetSheetMemo_(); // see DataAccess.js — never carry a stale sheet handle into a new update
   try {
+    // See DataAccess.js — never carry a stale sheet handle into a new
+    // update. Guarded on its own: a missing/broken memo reset must never
+    // take down message handling for the whole request.
+    try { resetSheetMemo_(); } catch (memoErr) { console.error('resetSheetMemo_ failed: ' + memoErr); }
+
     const update = JSON.parse(e.postData.contents);
     if (update.message) handleMessage(update.message);
   } catch (err) {
