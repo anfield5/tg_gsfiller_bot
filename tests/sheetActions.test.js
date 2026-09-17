@@ -163,3 +163,66 @@ test('_getSheet_ memo is cleared by resetSheetMemo_ (simulates a fresh doPost)',
   context._getSheet_('file1', 'Sheet1');
   assert.equal(opens, 2, 'a fresh execution (post-reset) must not reuse a handle from a previous update');
 });
+
+// ---------------------------------------------------------------------------
+// _topFrequentValues_ / actionTopFrequentColumnValues — "Recent TOP3 values"
+// ---------------------------------------------------------------------------
+
+test('_topFrequentValues_ ranks by occurrence count, most frequent first', () => {
+  const { context } = projectWithSheet({ name: 'Sheet1', values: [['A']] });
+  const values = ['Open', 'Closed', 'Open', 'Pending', 'Open', 'Closed'];
+  assert.deepEqual(context._topFrequentValues_(values, 3), ['Open', 'Closed', 'Pending']);
+});
+
+test('_topFrequentValues_ keeps first-seen order for ties (stable sort)', () => {
+  const { context } = projectWithSheet({ name: 'Sheet1', values: [['A']] });
+  // "Pending", "Approved" and "Draft" all occur exactly once — first-seen order wins.
+  const values = ['Pending', 'Approved', 'Draft'];
+  assert.deepEqual(context._topFrequentValues_(values, 3), ['Pending', 'Approved', 'Draft']);
+});
+
+test('_topFrequentValues_ ignores empty/whitespace-only values', () => {
+  const { context } = projectWithSheet({ name: 'Sheet1', values: [['A']] });
+  const values = ['Open', '', '  ', 'Open', null, undefined, 'Closed'];
+  assert.deepEqual(context._topFrequentValues_(values, 3), ['Open', 'Closed']);
+});
+
+test('_topFrequentValues_ respects topN even with more distinct values available', () => {
+  const { context } = projectWithSheet({ name: 'Sheet1', values: [['A']] });
+  const values = ['A', 'B', 'C', 'D', 'A', 'B'];
+  assert.deepEqual(context._topFrequentValues_(values, 2), ['A', 'B']);
+});
+
+test('actionTopFrequentColumnValues reads the last `lookbackRows` values of a column and ranks them', () => {
+  const sheet = {
+    name: 'Sheet1',
+    values: [
+      ['Name', 'Status'],
+      ['Alice', 'Open'],
+      ['Bob', 'Closed'],
+      ['Cara', 'Open'],
+      ['Dan', 'Open'],
+      ['Eve', 'Pending'],
+    ],
+  };
+  const { context } = projectWithSheet(sheet);
+  assert.deepEqual(
+    context.actionTopFrequentColumnValues('file1', 'Sheet1', 2, 10, 3),
+    ['Open', 'Closed', 'Pending']
+  );
+});
+
+test('actionTopFrequentColumnValues defaults to lookback=10 / topN=3 when not specified', () => {
+  const sheet = {
+    name: 'Sheet1',
+    values: [['Name', 'Status'], ['Alice', 'Open'], ['Bob', 'Open']],
+  };
+  const { context } = projectWithSheet(sheet);
+  assert.deepEqual(context.actionTopFrequentColumnValues('file1', 'Sheet1', 2), ['Open']);
+});
+
+test('actionTopFrequentColumnValues returns [] for a column with no recent data', () => {
+  const sheet = { name: 'Sheet1', values: [['Name', 'Status']] };
+  const { context } = projectWithSheet(sheet);
+  assert.deepEqual(context.actionTopFrequentColumnValues('file1', 'Sheet1', 2, 10, 3), []);
+});

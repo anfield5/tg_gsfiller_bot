@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createProject } = require('./harness');
 
 test('columnNumberToLetter converts 1-based column numbers to letters', () => {
@@ -84,4 +86,31 @@ test('formulaPlaceholderText_ is defined once and reused by both Navigation and 
   const text = context.formulaPlaceholderText_();
   assert.match(text, /Calculated Formula/);
   assert.equal(text, context.getIcons_().FORMULA + ' (Calculated Formula)');
+});
+
+test('DEFAULT_ICONS includes GEMINI (regression: this key went missing and rendered as "undefined Gemini Analysis")', () => {
+  const { context } = createProject({ files: ['Icons.js'] });
+  assert.equal(context.getIcons_().GEMINI, '✨');
+});
+
+test('every icons.XXX key referenced in Navigation.js exists in DEFAULT_ICONS', () => {
+  // Guards against the exact regression class that made the GEMINI icon
+  // fix necessary in the first place: a button referencing icons.SOMETHING
+  // where SOMETHING was never added to DEFAULT_ICONS renders literally as
+  // "undefined <label>" in Telegram, with no test failure and no thrown
+  // error — nothing but a manual look at the bot catches it. Scanning the
+  // source for every `icons.KEY` usage and diffing against the real key
+  // set catches it automatically instead.
+  const navSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'Navigation.js'), 'utf8');
+  const used = new Set();
+  const re = /\bicons\.([A-Z_]+)\b/g;
+  let m;
+  while ((m = re.exec(navSrc))) used.add(m[1]);
+
+  assert.ok(used.size > 0, 'sanity check: the scan should find at least one icons.XXX usage');
+
+  const { context } = createProject({ files: ['Icons.js'] });
+  const defined = new Set(Object.keys(context.getIcons_()));
+  const missing = [...used].filter((key) => !defined.has(key));
+  assert.deepEqual(missing, [], 'icons.XXX referenced in Navigation.js but missing from DEFAULT_ICONS: ' + missing.join(', '));
 });

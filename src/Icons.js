@@ -51,6 +51,9 @@ const DEFAULT_ICONS = {
   // Status
   WARNING: '⚠️',
   DENIED:  '🚫',
+
+  // Gemini Analysis
+  GEMINI: '✨',
 };
 
 let _iconsCache = null;

@@ -199,6 +199,37 @@ function getLastRows(fileId, sheetName, n) {
   return rows;
 }
 
+/**
+ * Returns the last `n` values of a single column (skipping row 1, the
+ * header), oldest-first. Same "real last row" resolution as getLastRows —
+ * a phantom row (see _findLastNonEmptyRow_ below) would otherwise make
+ * this return a run of blanks instead of actual recent values. Used by the
+ * add-row flow's "Recent TOP3 values" button to suggest commonly-used
+ * values for the field currently being filled.
+ *
+ * @param {string} fileId
+ * @param {string} sheetName
+ * @param {number} colIndex  1-based
+ * @param {number} n
+ * @returns {string[]}
+ */
+function getLastColumnValues(fileId, sheetName, colIndex, n) {
+  const sheet      = _getSheet_(fileId, sheetName);
+  const lastCol    = sheet.getLastColumn();
+  const rawLastRow = sheet.getLastRow();
+  if (rawLastRow < 2 || lastCol === 0 || colIndex > lastCol) return [];
+
+  const lastRow = _findLastNonEmptyRow_(sheet, rawLastRow, lastCol);
+  if (lastRow < 2) return [];
+
+  const startRow = Math.max(2, lastRow - n + 1);
+  const numRows  = lastRow - startRow + 1;
+
+  return sheet.getRange(startRow, colIndex, numRows, 1)
+    .getDisplayValues()
+    .map((row) => _normaliseDateString_(row[0]));
+}
+
 // How many rows to look back, at most, when hunting for the real last
 // data row below sheet.getLastRow(). Bounded to keep this a single cheap
 // batched read even when the phantom gap is large, rather than scanning

@@ -212,3 +212,54 @@ test('_findLastNonEmptyRow_ is capped to LAST_ROW_SCAN_WINDOW_ rows — a single
   });
   assert.deepEqual(context.getLastRows('file1', 'Sheet1', 1), []);
 });
+
+// ---------------------------------------------------------------------------
+// getLastColumnValues — feeds the "Recent TOP3 values" button. Shares the
+// same real-last-row resolution as getLastRows, so the phantom-row fix must
+// carry over to a single-column read too.
+// ---------------------------------------------------------------------------
+
+test('getLastColumnValues returns the last n values of one column, oldest-first', () => {
+  const sheet = sheetWithRows([
+    ['Alice', 'Open'],
+    ['Bob', 'Closed'],
+    ['Cara', 'Open'],
+    ['Dan', 'Pending'],
+  ]);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  // Column 2 ("Total" header slot, holding status strings here), last 3 values.
+  assert.deepEqual(
+    context.getLastColumnValues('file1', 'Sheet1', 2, 3),
+    ['Closed', 'Open', 'Pending']
+  );
+});
+
+test('getLastColumnValues skips trailing blank "phantom" rows like getLastRows does', () => {
+  const sheet = sheetWithRows([['Alice', 'Open'], ['Bob', 'Closed'], ['Cara', 'Open']], 6);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  assert.deepEqual(context.getLastColumnValues('file1', 'Sheet1', 2, 10), ['Open', 'Closed', 'Open']);
+});
+
+test('getLastColumnValues returns [] when the sheet has no data rows', () => {
+  const sheet = sheetWithRows([]);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  assert.deepEqual(context.getLastColumnValues('file1', 'Sheet1', 1, 10), []);
+});
+
+test('getLastColumnValues returns [] when colIndex is past the last column', () => {
+  const sheet = sheetWithRows([['Alice', 'Open']]);
+  const { context } = createProject({
+    files: ['DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+  assert.deepEqual(context.getLastColumnValues('file1', 'Sheet1', 5, 10), []);
+});

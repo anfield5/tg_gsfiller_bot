@@ -138,6 +138,54 @@ function actionGetFolderName(folderId)                  { return getFolderInfo(f
 function actionListSheets(fileId)                       { return listSheetsInFile(fileId); }
 function actionGetLastRows(fileId, sheetName, n)        { return getLastRows(fileId, sheetName, n); }
 function actionGetRowValues(fileId, sheetName, rowIndex){ return getRowValues(fileId, sheetName, rowIndex); }
+
+/**
+ * Looks at the last `lookbackRows` values of a single column and returns
+ * the `topN` most frequently occurring non-empty ones, most common first.
+ * Used by the add-row flow's "Recent TOP3 values" button — a quick,
+ * copy-pasteable suggestion list for fields that tend to repeat a small
+ * set of values (statuses, categories, names, etc.).
+ *
+ * @param {string} fileId
+ * @param {string} sheetName
+ * @param {number} colIndex      1-based
+ * @param {number} [lookbackRows] how many recent rows to sample (default 10)
+ * @param {number} [topN]         how many values to return (default 3)
+ * @returns {string[]}
+ */
+function actionTopFrequentColumnValues(fileId, sheetName, colIndex, lookbackRows, topN) {
+  const values = getLastColumnValues(fileId, sheetName, colIndex, lookbackRows || 10);
+  return _topFrequentValues_(values, topN || 3);
+}
+
+/**
+ * Ranks values by occurrence count, most frequent first. Ties keep
+ * first-seen order (Array.prototype.sort is stable in the V8 runtime both
+ * Apps Script and Node use). Empty/whitespace-only values are ignored —
+ * they're not a useful "suggestion".
+ *
+ * @param {Array<*>} values
+ * @param {number} topN
+ * @returns {string[]}
+ */
+function _topFrequentValues_(values, topN) {
+  const counts = {};
+  const order  = []; // first-seen order, used for stable tie-breaking
+
+  values.forEach(function (v) {
+    const key = String(v === null || v === undefined ? '' : v).trim();
+    if (!key) return;
+    if (!(key in counts)) {
+      counts[key] = 0;
+      order.push(key);
+    }
+    counts[key]++;
+  });
+
+  return order
+    .sort(function (a, b) { return counts[b] - counts[a]; })
+    .slice(0, topN);
+}
 function actionUpdateCell(fileId, sheetName, rowIndex, colIndex, value) {
   updateCell(fileId, sheetName, rowIndex, colIndex, value);
 }

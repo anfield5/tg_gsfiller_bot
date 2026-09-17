@@ -163,10 +163,17 @@ function sendLongPlainMessage(chatId, text, chunkSize) {
  * Call once after deploying: setWebhook('https://…workers.dev')
  * (point to the Cloudflare relay, not directly to the /exec URL).
  *
- * @param {string} webAppUrl  The relay or /exec URL to receive updates
+ * If you enabled ENABLE_SECRET_CHECK in cloudflare-relay/worker.js, pass the
+ * same string as `secretToken` so Telegram sends it back on every webhook
+ * request (X-Telegram-Bot-Api-Secret-Token) for the relay to verify.
+ *
+ * @param {string} webAppUrl     The relay or /exec URL to receive updates
+ * @param {string} [secretToken] Must match WEBHOOK_SECRET in the relay Worker
  */
-function setWebhook(webAppUrl) {
-  const result = _callTelegram_('setWebhook', { url: webAppUrl });
+function setWebhook(webAppUrl, secretToken) {
+  const payload = { url: webAppUrl };
+  if (secretToken) payload.secret_token = secretToken;
+  const result = _callTelegram_('setWebhook', payload);
   console.log(result.getContentText());
   return result.getContentText();
 }

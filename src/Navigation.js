@@ -517,6 +517,10 @@ function sendFieldPrompt(chatId, state) {
   }
 
   keyboardRows.push([
+    { label: icons.CHART + ' Recent TOP3 values', value: 'top3_values' },
+  ]);
+
+  keyboardRows.push([
     { label: icons.LEAVE_EMPTY + ' Leave empty', value: 'leave_empty' },
     { label: icons.FINISH + ' Finish row',       value: 'finish_row'  },
   ]);
@@ -556,6 +560,43 @@ function handlePrevField(chatId) {
   state.currentFieldIndex = prevIdx;
   setState(chatId, state);
   sendFieldPrompt(chatId, state);
+}
+
+/**
+ * "Recent TOP3 values" — looks at the last 10 values already entered in the
+ * column currently being filled, ranks them by frequency, and sends the
+ * top 3 as a single tap-to-copy <code> block. Does NOT advance the flow:
+ * the same field prompt (with the same keyboard) is re-rendered afterwards,
+ * so the user can tap-copy, paste, and edit before submitting.
+ * @param {string} chatId
+ */
+function handleTop3Values(chatId) {
+  const state   = getState(chatId);
+  const headers = state.headers || [];
+  const idx     = state.currentFieldIndex || 0;
+  const icons   = getIcons_();
+
+  let top3 = [];
+  try {
+    top3 = actionTopFrequentColumnValues(state.fileId, state.sheetName, idx + 1, 10, 3);
+  } catch (e) {
+    sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message));
+    sendFieldPrompt(chatId, state);
+    return;
+  }
+
+  if (!top3.length) {
+    sendMessage(chatId, icons.CHART + ' No recent values found for <b>' + escapeHtml_(headers[idx]) + '</b>.');
+  } else {
+    sendMessage(
+      chatId,
+      icons.CHART + ' <b>Top ' + top3.length + ' recent values for ' + escapeHtml_(headers[idx]) + ':</b>\n\n' +
+      icons.POINTER + ' <b>Tap to copy</b>, then paste the one you want:\n\n' +
+      '<code>' + escapeHtml_(top3.join('\n')) + '</code>'
+    );
+  }
+
+  sendFieldPrompt(chatId, state); // stay on the same field/keyboard
 }
 
 function handleUseLastEditRequest(chatId) {

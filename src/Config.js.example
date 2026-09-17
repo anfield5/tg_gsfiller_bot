@@ -47,15 +47,34 @@ const CONFIG = {
   //   SAVE: '💾',
   // },
 
-  // Gemini model used by the "Gemini Analysis" button. Flash is fast/cheap
-  // and enough for row/column summarisation; switch to a "pro" model here
-  // if you need deeper reasoning over larger ranges.
-  GEMINI_MODEL: 'gemini-2.5-flash',
+  // Fallback model id, used ONLY if callGemini_ is ever invoked without an
+  // explicit model — normal flow always passes whatever the user picked in
+  // the live model picker (see GeminiApi.js listGeminiModels_), so this
+  // rarely matters in practice. Google periodically retires model ids
+  // (gemini-2.5-flash itself was retired for new users — see GeminiApi.js),
+  // so don't rely on this value staying valid; the picker is the real path.
+  GEMINI_MODEL: 'gemini-3.6-flash',
 
   // Safety cap on how many rows of a column/range are sent to Gemini in one
   // request (keeps token usage and cost bounded on large sheets). The user
   // is told in the response when data was truncated.
   GEMINI_MAX_ROWS: 500,
+
+  // Optional: how long the fetched+filtered Gemini model list is cached, in
+  // seconds (default 6h, hard-capped at 21600s by CacheService). The
+  // picker's Refresh button bypasses this and re-checks live availability.
+  // GEMINI_MODEL_CACHE_TTL_SECONDS: 21600,
+
+  // Optional: prebuilt voice name for audio narration (default 'Kore').
+  // See https://ai.google.dev/gemini-api/docs/speech-generation for the
+  // full list.
+  // GEMINI_TTS_VOICE: 'Kore',
+
+  // Optional: extend the free-tier model allowlist beyond the built-in list
+  // in GeminiApi.js (DEFAULT_FREE_MODELS_) — same shape:
+  // GEMINI_EXTRA_FREE_MODELS: [
+  //   { prefix: 'gemini-2.5-flash' }, // e.g. if your account is grandfathered in
+  // ],
 };
 
 /**

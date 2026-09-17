@@ -4,6 +4,14 @@
  * resolves the current conversation step, and dispatches to handlers.
  */
 
+// Bump this alongside the git tag on every release (see README.md /
+// commit message convention). Checkable live via the /version command —
+// deliberately not tied to package.json (that file is never pushed to
+// Apps Script), so this is the one source of truth for "what code is
+// actually running" without needing the Executions log or a manual
+// diagnostic function.
+const BOT_VERSION = '1.7.0';
+
 // ---------------------------------------------------------------------------
 // Webhook entry-point
 // ---------------------------------------------------------------------------
@@ -41,8 +49,9 @@ function handleMessage(message) {
   const text = (message.text || '').trim();
 
   // Global commands always take priority.
-  if (text === '/start')  { clearState(chatId); showMainMenu(chatId); return; }
-  if (text === '/cancel') { clearState(chatId); sendMessageNoKeyboard(chatId, 'Reset to home.'); showMainMenu(chatId); return; }
+  if (text === '/start')   { clearState(chatId); showMainMenu(chatId); return; }
+  if (text === '/cancel')  { clearState(chatId); sendMessageNoKeyboard(chatId, 'Reset to home.'); showMainMenu(chatId); return; }
+  if (text === '/version') { sendMessage(chatId, getIcons_().CHART + ' Bot version: <b>' + escapeHtml_(BOT_VERSION) + '</b>'); return; }
 
   const state = getState(chatId);
 
@@ -158,6 +167,9 @@ function routeAction(chatId, value) {
     }
     case 'use_last_edit_request':
       handleUseLastEditRequest(chatId);
+      break;
+    case 'top3_values':
+      handleTop3Values(chatId);
       break;
     case 'leave_empty':
       handleAddFieldInput(chatId, state, '');
