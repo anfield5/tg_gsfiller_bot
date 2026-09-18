@@ -509,16 +509,23 @@ function sendFieldPrompt(chatId, state) {
     ? String(state.lastRowValues[idx])
     : '';
 
+  // "Recent TOP3 values" is a lookup/suggestion action, not a value-setting
+  // one — it doesn't have a natural same-row partner the way Use/Edit Last
+  // or Leave empty/Finish do, so pairing it into one of those rows would
+  // mix unrelated actions. Placed as its own full-width row at the very
+  // TOP of the keyboard instead: that's the one place a lone wide button
+  // reads as "check this first" rather than as a mis-sized leftover in the
+  // middle of otherwise-paired rows.
+  keyboardRows.push([
+    { label: icons.CHART + ' Recent TOP3 values', value: 'top3_values' },
+  ]);
+
   if (lastVal.trim().length > 0) {
     keyboardRows.push([
       { label: icons.USE_LAST + ' Use: ' + formatPreview(lastVal, 15), value: 'use_last_direct'     },
       { label: icons.EDIT + ' Edit Last Value',                        value: 'use_last_edit_request' },
     ]);
   }
-
-  keyboardRows.push([
-    { label: icons.CHART + ' Recent TOP3 values', value: 'top3_values' },
-  ]);
 
   keyboardRows.push([
     { label: icons.LEAVE_EMPTY + ' Leave empty', value: 'leave_empty' },
@@ -565,9 +572,13 @@ function handlePrevField(chatId) {
 /**
  * "Recent TOP3 values" — looks at the last 10 values already entered in the
  * column currently being filled, ranks them by frequency, and sends the
- * top 3 as a single tap-to-copy <code> block. Does NOT advance the flow:
- * the same field prompt (with the same keyboard) is re-rendered afterwards,
- * so the user can tap-copy, paste, and edit before submitting.
+ * top 3 as separate tap-to-copy <code> spans, one per line. Each value gets
+ * its OWN <code>...</code> tag (rather than one block holding all three
+ * separated by newlines) so tapping any single line copies just that value —
+ * Telegram's tap-to-copy only covers the span you actually tap. Does NOT
+ * advance the flow: the same field prompt (with the same keyboard) is
+ * re-rendered afterwards, so the user can tap-copy, paste, and edit before
+ * submitting.
  * @param {string} chatId
  */
 function handleTop3Values(chatId) {
@@ -588,11 +599,12 @@ function handleTop3Values(chatId) {
   if (!top3.length) {
     sendMessage(chatId, icons.CHART + ' No recent values found for <b>' + escapeHtml_(headers[idx]) + '</b>.');
   } else {
+    const valueLines = top3.map(function (v) { return '<code>' + escapeHtml_(v) + '</code>'; }).join('\n');
     sendMessage(
       chatId,
       icons.CHART + ' <b>Top ' + top3.length + ' recent values for ' + escapeHtml_(headers[idx]) + ':</b>\n\n' +
-      icons.POINTER + ' <b>Tap to copy</b>, then paste the one you want:\n\n' +
-      '<code>' + escapeHtml_(top3.join('\n')) + '</code>'
+      icons.POINTER + ' <b>Tap a value to copy it</b>, then paste the one you want:\n\n' +
+      valueLines
     );
   }
 

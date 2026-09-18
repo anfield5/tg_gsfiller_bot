@@ -29,6 +29,9 @@ as Script Properties. See comments in `Config.js.example` for every setting.
   answer as audio.
 - Two-level caching (folder listings, sheet headers, Gemini model list) and
   in-execution batching keep repeat navigation and add-row fast.
+- **`/version`** replies with the deployed code version (`BOT_VERSION` in
+  `Code.js`) — a quick way to confirm the live deployment actually matches
+  what you last pushed, without digging through the Executions log.
 
 ## Known limitations
 

@@ -7,9 +7,10 @@ const { createProject } = require('./harness');
 /**
  * End-to-end test of the "Recent TOP3 values" button added to the add-row
  * flow: pressing it should look at the last 10 values already in the
- * column currently being filled, return the 3 most frequent as a single
- * tap-to-copy <code> block, and leave the user on the same field/keyboard
- * (unlike Use-last/Leave-empty, which advance to the next field).
+ * column currently being filled, return the 3 most frequent as separate
+ * tap-to-copy <code> spans (one per value, so each can be copied on its
+ * own), and leave the user on the same field/keyboard (unlike
+ * Use-last/Leave-empty, which advance to the next field).
  *
  * Sheet has 3 columns: Name, Status, Notes. Status already has 5 historical
  * values (Open x3, Closed x1, Pending x1) so the ranking is unambiguous.
@@ -63,17 +64,25 @@ function startAtStatusField(context, chatId) {
   assert.equal(context.getState(chatId).currentFieldIndex, 1, 'setup: should now be prompting Status');
 }
 
-test('the "Recent TOP3 values" button is offered on every add-row field prompt', () => {
+test('the "Recent TOP3 values" button is offered on every add-row field prompt, as the first (topmost) row', () => {
   const { context, urlFetch } = setupProject();
   const chatId = '111';
   startAtStatusField(context, chatId);
 
-  const labels = keyboardLabels(lastCallBody(urlFetch));
+  const body = lastCallBody(urlFetch);
+  const labels = keyboardLabels(body);
   const icons = context.getIcons_();
   assert.ok(labels.includes(icons.CHART + ' Recent TOP3 values'));
+
+  // It's a lookup/suggestion action with no natural same-row partner, so it
+  // gets its own full-width row at the very TOP of the keyboard — placing
+  // a lone wide button there reads as "check this first" instead of as an
+  // odd-sized leftover wedged between the paired action rows.
+  const firstRow = body.reply_markup.keyboard[0];
+  assert.deepEqual(firstRow.map((b) => b.text), [icons.CHART + ' Recent TOP3 values']);
 });
 
-test('handleTop3Values sends the 3 most frequent recent values as a tap-to-copy <code> block', () => {
+test('handleTop3Values sends each of the 3 most frequent recent values as its OWN tap-to-copy <code> span', () => {
   const { context, urlFetch } = setupProject();
   const chatId = '111';
   startAtStatusField(context, chatId);
@@ -83,7 +92,10 @@ test('handleTop3Values sends the 3 most frequent recent values as a tap-to-copy 
   const calls = urlFetch.calls;
   const top3Call = calls[calls.length - 2].body; // last call re-renders the prompt; this one is the results message
   assert.match(top3Call.text, /Top 3 recent values for Status/);
-  assert.match(top3Call.text, /<code>Open\nClosed\nPending<\/code>/, 'values must be newline-separated inside one <code> block for easy copy-paste');
+  // Each value wrapped in its own <code> tag on its own line — tapping any
+  // one line in Telegram copies just that value, not all three at once.
+  assert.match(top3Call.text, /<code>Open<\/code>\n<code>Closed<\/code>\n<code>Pending<\/code>/);
+  assert.doesNotMatch(top3Call.text, /<code>Open\n/, 'values must not be bundled inside a single shared <code> block anymore');
 });
 
 test('handleTop3Values does not advance the field or clear entered data (stays on the same prompt)', () => {

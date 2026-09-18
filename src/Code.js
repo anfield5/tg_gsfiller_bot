@@ -10,7 +10,7 @@
 // Apps Script), so this is the one source of truth for "what code is
 // actually running" without needing the Executions log or a manual
 // diagnostic function.
-const BOT_VERSION = '1.7.0';
+const BOT_VERSION = '1.7.1';
 
 // ---------------------------------------------------------------------------
 // Webhook entry-point
