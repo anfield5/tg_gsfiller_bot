@@ -37,7 +37,7 @@ function threeLevelTree() {
 
 test('FOLDER_SCAN_DEPTH 0 only scans the folder itself', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_SCAN_DEPTH: 0, FOLDER_CACHE_TTL_SECONDS: 300 },
     DriveApp: threeLevelTree(),
   });
@@ -47,7 +47,7 @@ test('FOLDER_SCAN_DEPTH 0 only scans the folder itself', () => {
 
 test('FOLDER_SCAN_DEPTH 1 scans the folder plus one level of subfolders (legacy default behavior)', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_SCAN_DEPTH: 1, FOLDER_CACHE_TTL_SECONDS: 300 },
     DriveApp: threeLevelTree(),
   });
@@ -57,7 +57,7 @@ test('FOLDER_SCAN_DEPTH 1 scans the folder plus one level of subfolders (legacy 
 
 test('FOLDER_SCAN_DEPTH 2 recurses two levels deep', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_SCAN_DEPTH: 2, FOLDER_CACHE_TTL_SECONDS: 300 },
     DriveApp: threeLevelTree(),
   });
@@ -70,7 +70,7 @@ test('FOLDER_SCAN_DEPTH 2 recurses two levels deep', () => {
 
 test('missing FOLDER_SCAN_DEPTH falls back to depth 1 for backward compatibility', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_CACHE_TTL_SECONDS: 300 }, // no FOLDER_SCAN_DEPTH key at all
     DriveApp: threeLevelTree(),
   });
@@ -80,7 +80,7 @@ test('missing FOLDER_SCAN_DEPTH falls back to depth 1 for backward compatibility
 
 test('trashed files are excluded from folder scans', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_SCAN_DEPTH: 0, FOLDER_CACHE_TTL_SECONDS: 300 },
     DriveApp: {
       root: {
@@ -100,7 +100,7 @@ test('trashed files are excluded from folder scans', () => {
 test('results are cached — a second call does not touch DriveApp again', () => {
   let driveCalls = 0;
   const project = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_SCAN_DEPTH: 0, FOLDER_CACHE_TTL_SECONDS: 300 },
   });
   // Wrap DriveApp with a call counter after load, then re-point the global.
@@ -120,7 +120,7 @@ test('results are cached — a second call does not touch DriveApp again', () =>
 test('forceRefresh bypasses the cache', () => {
   let driveCalls = 0;
   const project = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     CONFIG: { FOLDER_SCAN_DEPTH: 0, FOLDER_CACHE_TTL_SECONDS: 300 },
   });
   const realDrive = require('./gas-mocks').createDriveAppMock({
@@ -156,7 +156,7 @@ function sheetWithRows(dataRows, trailingBlankRows) {
 test('getLastRows returns the real last row when there is no phantom gap', () => {
   const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200']]);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   const rows = context.getLastRows('file1', 'Sheet1', 1);
@@ -171,7 +171,7 @@ test('getLastRows skips trailing blank "phantom" rows left by stray formatting',
   // mirrors that by using the raw values array length).
   const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200']], 5);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
 
@@ -184,7 +184,7 @@ test('getLastRows skips trailing blank "phantom" rows left by stray formatting',
 test('getLastRows(n=2) still returns newest-first after skipping a phantom gap', () => {
   const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200'], ['Cara', '300']], 4);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   const rows = context.getLastRows('file1', 'Sheet1', 2);
@@ -195,7 +195,7 @@ test('getLastRows returns [] when everything within the scan window is blank', (
   // Header + 10 blank rows, nothing real to find within the lookback window.
   const sheet = sheetWithRows([], 10);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   assert.deepEqual(context.getLastRows('file1', 'Sheet1', 1), []);
@@ -207,7 +207,7 @@ test('_findLastNonEmptyRow_ is capped to LAST_ROW_SCAN_WINDOW_ rows — a single
   // this documents the bound rather than scanning arbitrarily far back.
   const sheet = sheetWithRows([['Alice', '100'], ['Bob', '200']], 300);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   assert.deepEqual(context.getLastRows('file1', 'Sheet1', 1), []);
@@ -227,7 +227,7 @@ test('getLastColumnValues returns the last n values of one column, oldest-first'
     ['Dan', 'Pending'],
   ]);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   // Column 2 ("Total" header slot, holding status strings here), last 3 values.
@@ -240,7 +240,7 @@ test('getLastColumnValues returns the last n values of one column, oldest-first'
 test('getLastColumnValues skips trailing blank "phantom" rows like getLastRows does', () => {
   const sheet = sheetWithRows([['Alice', 'Open'], ['Bob', 'Closed'], ['Cara', 'Open']], 6);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   assert.deepEqual(context.getLastColumnValues('file1', 'Sheet1', 2, 10), ['Open', 'Closed', 'Open']);
@@ -249,7 +249,7 @@ test('getLastColumnValues skips trailing blank "phantom" rows like getLastRows d
 test('getLastColumnValues returns [] when the sheet has no data rows', () => {
   const sheet = sheetWithRows([]);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   assert.deepEqual(context.getLastColumnValues('file1', 'Sheet1', 1, 10), []);
@@ -258,8 +258,38 @@ test('getLastColumnValues returns [] when the sheet has no data rows', () => {
 test('getLastColumnValues returns [] when colIndex is past the last column', () => {
   const sheet = sheetWithRows([['Alice', 'Open']]);
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   assert.deepEqual(context.getLastColumnValues('file1', 'Sheet1', 5, 10), []);
+});
+
+// ---------------------------------------------------------------------------
+// _getSheet_ is wrapped in _timed_ (Timing.js) — this is the single biggest,
+// least avoidable source of slow replies (SpreadsheetApp.openById on a large
+// or complex spreadsheet), so it must actually be instrumented, not just
+// have _timed_ exist unused somewhere.
+// ---------------------------------------------------------------------------
+
+test('_getSheet_ logs a [timing] line for a slow SpreadsheetApp.openById call', () => {
+  const sheet = sheetWithRows([['Alice', '100']]);
+  const { context } = createProject({
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
+    SpreadsheetApp: { file1: { sheets: [sheet] } },
+  });
+
+  const logs = [];
+  context.console = { log: (msg) => logs.push(msg), error: () => {} };
+  const realOpenById = context.SpreadsheetApp.openById;
+  let calls = 0;
+  const times = [1000, 1400]; // 400ms elapsed
+  // Stub only Date.now() — replacing the whole Date binding would break
+  // `new Date()`, which log_()'s ring buffer (Logging.js) needs for its
+  // timestamp prefix.
+  context.Date.now = () => times[calls++];
+  context.SpreadsheetApp.openById = (id) => realOpenById(id); // keep real behavior, just under the fake clock
+
+  context._getSheet_('file1', 'Sheet1');
+
+  assert.deepEqual(logs, ['[timing] SpreadsheetApp.openById:file1: 400ms']);
 });

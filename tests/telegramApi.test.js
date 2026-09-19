@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const { createProject } = require('./harness');
 
 function setup() {
-  return createProject({ files: ['Icons.js', 'TelegramApi.js'] });
+  return createProject({ files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js'] });
 }
 
 function lastCall(urlFetch) {

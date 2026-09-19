@@ -66,7 +66,7 @@ function actionGetHeaders(fileId, sheetName) {
     try { cache.put(cacheKey, JSON.stringify(headers), 120); } catch (e) { /* ignore */ }
     return headers;
   } catch (e) {
-    console.error('actionGetHeaders failed: ' + e);
+    logError_('actionGetHeaders failed: ' + e);
     throw new Error('Could not read column headers: ' + e.message);
   }
 }
@@ -124,7 +124,7 @@ function actionAddRow(fileId, sheetName, formData, headers) {
       }
     });
   } catch (e) {
-    console.error('actionAddRow failed: ' + e);
+    logError_('actionAddRow failed: ' + e);
     throw new Error('Failed to save row: ' + e.message);
   }
 }

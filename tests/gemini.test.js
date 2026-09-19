@@ -9,32 +9,32 @@ const { createProject } = require('./harness');
 // ---------------------------------------------------------------------------
 
 test('_parseA1Range_ parses a standard range', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.deepEqual(context._parseA1Range_('A2:C10'), { row: 2, col: 1, numRows: 9, numCols: 3 });
 });
 
 test('_parseA1Range_ handles a single cell (no colon)', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.deepEqual(context._parseA1Range_('B5'), { row: 5, col: 2, numRows: 1, numCols: 1 });
 });
 
 test('_parseA1Range_ normalises reversed corners (e.g. C10:A2) into a positive range', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.deepEqual(context._parseA1Range_('C10:A2'), { row: 2, col: 1, numRows: 9, numCols: 3 });
 });
 
 test('_parseA1Range_ handles multi-letter columns', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.deepEqual(context._parseA1Range_('AA1:AB2'), { row: 1, col: 27, numRows: 2, numCols: 2 });
 });
 
 test('_parseA1Range_ is case-insensitive and trims whitespace', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.deepEqual(context._parseA1Range_('  a2:c10  '), { row: 2, col: 1, numRows: 9, numCols: 3 });
 });
 
 test('_parseA1Range_ returns null for garbage input', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.equal(context._parseA1Range_('not a range'), null);
   assert.equal(context._parseA1Range_(''), null);
   assert.equal(context._parseA1Range_('A2:C10:E5'), null);
@@ -52,7 +52,7 @@ function sheetWithColumn(numDataRows) {
 
 test('getColumnValues skips the header row and returns the rest', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheetWithColumn(3)] } },
   });
   const result = context.getColumnValues('file1', 'Sheet1', 1, 500);
@@ -62,7 +62,7 @@ test('getColumnValues skips the header row and returns the rest', () => {
 
 test('getColumnValues truncates at maxRows and reports it', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheetWithColumn(10)] } },
   });
   const result = context.getColumnValues('file1', 'Sheet1', 1, 4);
@@ -72,7 +72,7 @@ test('getColumnValues truncates at maxRows and reports it', () => {
 
 test('getColumnValues on a header-only sheet returns an empty, non-truncated result', () => {
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheetWithColumn(0)] } },
   });
   const result = context.getColumnValues('file1', 'Sheet1', 1, 500);
@@ -91,7 +91,7 @@ test('getRangeValues reads the requested rectangle', () => {
     ],
   };
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   const result = context.getRangeValues('file1', 'Sheet1', 'A2:B3', 500);
@@ -102,7 +102,7 @@ test('getRangeValues reads the requested rectangle', () => {
 test('getRangeValues clamps a range that overruns the sheet, without erroring', () => {
   const sheet = { name: 'Sheet1', values: [['H1', 'H2'], ['a1', 'b1']] };
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   const result = context.getRangeValues('file1', 'Sheet1', 'A1:Z100', 500);
@@ -112,7 +112,7 @@ test('getRangeValues clamps a range that overruns the sheet, without erroring', 
 test('getRangeValues throws a clear error for an unparseable range', () => {
   const sheet = { name: 'Sheet1', values: [['H1']] };
   const { context } = createProject({
-    files: ['DataAccess.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   assert.throws(() => context.getRangeValues('file1', 'Sheet1', 'not a range', 500), /A2:C10/);
@@ -133,7 +133,7 @@ function geminiResponsePayload(text, finishReason) {
 
 test('callGemini_ sends the model + prompt and returns the response text', () => {
   const { context, urlFetch } = createProject({
-    files: ['GeminiApi.js'],
+    files: ['Logging.js', 'Timing.js', 'GeminiApi.js'],
     CONFIG: { GEMINI_MODEL: 'gemini-2.5-flash' },
   });
   urlFetch.fetch = (url, options) => {
@@ -150,13 +150,13 @@ test('callGemini_ sends the model + prompt and returns the response text', () =>
 });
 
 test('callGemini_ throws on a non-2xx HTTP response', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({ getResponseCode: () => 429, getContentText: () => '{"error":"rate limited"}' });
   assert.throws(() => context.callGemini_('x'), /HTTP 429/);
 });
 
 test('callGemini_ throws a specific error when the response is safety-blocked', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({ candidates: [{ finishReason: 'SAFETY', content: { parts: [] } }] }),
@@ -165,7 +165,7 @@ test('callGemini_ throws a specific error when the response is safety-blocked', 
 });
 
 test('callGemini_ throws when there are no candidates at all', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify({}) });
   // No `candidates` key at all is a distinct failure from "candidate present
   // but its parts were empty" (see the next test) — GeminiApi.js reports
@@ -174,7 +174,7 @@ test('callGemini_ throws when there are no candidates at all', () => {
 });
 
 test('callGemini_ throws "empty response" when a candidate is present but has no text', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }),
@@ -183,7 +183,7 @@ test('callGemini_ throws "empty response" when a candidate is present but has no
 });
 
 test('callGemini_ marks the model overloaded on a 503, so isGeminiModelOverloaded_ picks it up', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({ getResponseCode: () => 503, getContentText: () => '{"error":{"message":"high demand"}}' });
 
   assert.equal(context.isGeminiModelOverloaded_('gemini-3.6-flash'), false);
@@ -194,7 +194,7 @@ test('callGemini_ marks the model overloaded on a 503, so isGeminiModelOverloade
 });
 
 test('callGemini_ does NOT mark the model overloaded on a non-503 error', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({ getResponseCode: () => 429, getContentText: () => '{"error":{"message":"rate limited"}}' });
   assert.throws(() => context.callGemini_('x', 'gemini-3.6-flash'), /HTTP 429/);
   assert.equal(context.isGeminiModelOverloaded_('gemini-3.6-flash'), false);
@@ -208,7 +208,7 @@ test('callGemini_ does NOT mark the model overloaded on a non-503 error', () => 
 // ---------------------------------------------------------------------------
 
 test('_findGeminiAllowEntry_ accepts exact ids and genuine version/date/Gemma-size suffixes', () => {
-  const { context } = createProject({ files: ['GeminiApi.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   const free = context._getDefaultFreeModels_();
   const accept = [
     'gemini-2.5-pro',
@@ -225,7 +225,7 @@ test('_findGeminiAllowEntry_ accepts exact ids and genuine version/date/Gemma-si
 });
 
 test('_findGeminiAllowEntry_ rejects unrelated sibling models sharing a common string prefix', () => {
-  const { context } = createProject({ files: ['GeminiApi.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   const free = context._getDefaultFreeModels_();
   const reject = [
     'gemini-2.5-pro-preview-tts',  // sibling of gemini-2.5-pro, different (paid) model
@@ -248,7 +248,7 @@ function rawModel(name, displayName, description) {
 }
 
 test('listGeminiModels_ keeps only allowlisted, generateContent-capable models, sorted by displayName', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({
@@ -269,7 +269,7 @@ test('listGeminiModels_ keeps only allowlisted, generateContent-capable models, 
 });
 
 test('listGeminiModels_ deduplicates models that share a displayName, keeping the first', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({
@@ -285,7 +285,7 @@ test('listGeminiModels_ deduplicates models that share a displayName, keeping th
 });
 
 test('listGeminiModels_ classifies by description and assigns fixed categories for audio', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({
@@ -306,7 +306,7 @@ test('listGeminiModels_ classifies by description and assigns fixed categories f
 });
 
 test('listGeminiModels_ caches its result; a second call does not re-fetch', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = (url, options) => {
     urlFetch.calls.push({ url, options });
     return {
@@ -320,7 +320,7 @@ test('listGeminiModels_ caches its result; a second call does not re-fetch', () 
 });
 
 test('clearGeminiModelsCache_ forces the next listGeminiModels_ call to re-fetch', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = (url, options) => {
     urlFetch.calls.push({ url, options });
     return {
@@ -335,7 +335,7 @@ test('clearGeminiModelsCache_ forces the next listGeminiModels_ call to re-fetch
 });
 
 test('listGeminiModels_ throws a clear error when no models on the account are on the allowlist', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({ models: [rawModel('gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview', 'Not free')] }),
@@ -348,7 +348,7 @@ test('listGeminiModels_ throws a clear error when no models on the account are o
 // ---------------------------------------------------------------------------
 
 test('callGeminiAudio_ sends AUDIO responseModalities and wraps the returned PCM as a WAV blob', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   const pcmBase64 = Buffer.from([1, 2, 3, 4]).toString('base64');
   urlFetch.fetch = (url, options) => {
     urlFetch.calls.push({ url, options, body: JSON.parse(options.payload) });
@@ -368,7 +368,7 @@ test('callGeminiAudio_ sends AUDIO responseModalities and wraps the returned PCM
 });
 
 test('callGeminiAudio_ throws when Gemini does not return inline audio data', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'no audio here' }] } }] }),
@@ -377,7 +377,7 @@ test('callGeminiAudio_ throws when Gemini does not return inline audio data', ()
 });
 
 test('callGeminiImage_ sends TEXT+IMAGE responseModalities and returns the image blob plus any caption text', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   const imgBase64 = Buffer.from([9, 9, 9]).toString('base64');
   urlFetch.fetch = (url, options) => {
     urlFetch.calls.push({ url, options, body: JSON.parse(options.payload) });
@@ -399,7 +399,7 @@ test('callGeminiImage_ sends TEXT+IMAGE responseModalities and returns the image
 });
 
 test('callGeminiImage_ throws when Gemini returns no image', () => {
-  const { context, urlFetch } = createProject({ files: ['GeminiApi.js'] });
+  const { context, urlFetch } = createProject({ files: ['Logging.js', 'Timing.js', 'GeminiApi.js'] });
   urlFetch.fetch = () => ({
     getResponseCode: () => 200,
     getContentText: () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'just text, no image' }] } }] }),
@@ -423,7 +423,7 @@ test('actionAnalyzeRow labels values with headers and includes the user instruct
   // note in tests/navigation-prev-field.test.js — hence the blank row 2.
   const sheet = { name: 'Sheet1', values: [['Name', 'Total'], ['', ''], ['Alice', '100']] };
   const { context, urlFetch } = createProject({
-    files: ['DataAccess.js', 'SheetActions.js', 'GeminiApi.js', 'GeminiActions.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js', 'SheetActions.js', 'GeminiApi.js', 'GeminiActions.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   mockGeminiReply(urlFetch, 'Analysis result');
@@ -442,7 +442,7 @@ test('actionAnalyzeColumn includes the truncation note when data was capped', ()
   for (let i = 1; i <= 10; i++) values.push(['v' + i]);
   const sheet = { name: 'Sheet1', values };
   const { context, urlFetch } = createProject({
-    files: ['DataAccess.js', 'SheetActions.js', 'GeminiApi.js', 'GeminiActions.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js', 'SheetActions.js', 'GeminiApi.js', 'GeminiActions.js'],
     CONFIG: { GEMINI_MAX_ROWS: 3 },
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
@@ -461,7 +461,7 @@ test('actionAnalyzeRange sends the requested rectangle as tab-separated rows', (
     values: [['H1', 'H2'], ['a1', 'b1'], ['a2', 'b2']],
   };
   const { context, urlFetch } = createProject({
-    files: ['DataAccess.js', 'SheetActions.js', 'GeminiApi.js', 'GeminiActions.js'],
+    files: ['Logging.js', 'Timing.js', 'DataAccess.js', 'SheetActions.js', 'GeminiApi.js', 'GeminiActions.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
   mockGeminiReply(urlFetch, 'ok');

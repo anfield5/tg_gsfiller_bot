@@ -168,12 +168,14 @@ function listGeminiModels_() {
   const url = 'https://generativelanguage.googleapis.com/v1beta/models?key=' +
     encodeURIComponent(apiKey) + '&pageSize=200';
 
-  const response = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  const response = _timed_('Gemini:ListModels', function () {
+    return UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  });
   const code     = response.getResponseCode();
   const bodyText = response.getContentText();
 
   if (code < 200 || code >= 300) {
-    Logger.log('Gemini ListModels error (HTTP ' + code + '): ' + bodyText);
+    logError_('Gemini ListModels error (HTTP ' + code + '): ' + bodyText);
     throw new Error('Failed to fetch Gemini model list (HTTP ' + code + ').');
   }
 
@@ -287,11 +289,13 @@ function _geminiFetch_(model, payload) {
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
     encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
+  const response = _timed_('Gemini:' + model, function () {
+    return UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
   });
 
   return { code: response.getResponseCode(), bodyText: response.getContentText() };
@@ -318,7 +322,7 @@ function _throwGeminiHttpError_(code, bodyText, model, context) {
     // bodyText wasn't JSON; fall back to raw text.
   }
   if (code === 503) _markGeminiModelOverloaded_(model);
-  Logger.log('Gemini ' + context + ' error (HTTP ' + code + ') for model "' + model + '": ' + bodyText);
+  logError_('Gemini ' + context + ' error (HTTP ' + code + ') for model "' + model + '": ' + bodyText);
   throw new Error('Gemini ' + context + ' failed (HTTP ' + code + '): ' + reason);
 }
 

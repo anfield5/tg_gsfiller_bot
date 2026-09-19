@@ -81,7 +81,7 @@ function _resolveFolderLabel_(folderId, folderIndex) {
     // spaces, smart quotes, stray whitespace) that look identical to a
     // valid ID when eyeballed in the Config.gs editor but make DriveApp
     // reject it. Invisible when everything resolves normally.
-    Logger.log('Folder lookup failed for id ' + JSON.stringify(folderId) + ' (index ' + folderIndex + '): ' + e);
+    logError_('Folder lookup failed for id ' + JSON.stringify(folderId) + ' (index ' + folderIndex + '): ' + e);
     return 'Folder ' + (folderIndex + 1) + ' [len=' + folderId.length + ' ' + JSON.stringify(folderId) + ']';
   }
 }
@@ -1109,10 +1109,12 @@ function _sendMediaBlob_(chatId, method, mediaField, blob, caption) {
   payload[mediaField] = blob;
   if (caption) payload.caption = caption.slice(0, 1024); // Telegram caption limit
 
-  const response = UrlFetchApp.fetch(url, { method: 'post', payload: payload, muteHttpExceptions: true });
+  const response = _timed_('Telegram:' + method, function () {
+    return UrlFetchApp.fetch(url, { method: 'post', payload: payload, muteHttpExceptions: true });
+  });
   const code = response.getResponseCode();
   if (code < 200 || code >= 300) {
-    Logger.log('Telegram ' + method + ' error (HTTP ' + code + '): ' + response.getContentText());
+    logError_('Telegram ' + method + ' error (HTTP ' + code + '): ' + response.getContentText());
     throw new Error('Failed to send ' + mediaField + ' to Telegram (HTTP ' + code + ').');
   }
 }

@@ -6,7 +6,7 @@ const { createProject } = require('./harness');
 
 function projectWithSheet(sheetSpec) {
   return createProject({
-    files: ['Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
+    files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
     SpreadsheetApp: { file1: { sheets: [sheetSpec] } },
   });
 }
@@ -78,7 +78,7 @@ test('actionAddRow appends values, replicates formulas and merges from the templ
     merges: [],
   };
   const { context } = createProject({
-    files: ['Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
+    files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
 
@@ -100,7 +100,7 @@ test('actionAddRow replicates horizontal merges from the template row onto the n
     merges: [{ row: 2, col: 1, numRows: 1, numCols: 2 }],
   };
   const { context } = createProject({
-    files: ['Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
+    files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
 
@@ -126,7 +126,7 @@ test('actionAddRow reads the template row\'s formulas in one batched call, not o
     merges: [],
   };
   const { context } = createProject({
-    files: ['Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
+    files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js', 'DataAccess.js', 'SheetActions.js'],
     SpreadsheetApp: { file1: { sheets: [sheet] } },
   });
 

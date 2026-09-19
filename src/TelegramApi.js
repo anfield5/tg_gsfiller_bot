@@ -42,10 +42,10 @@ function _callTelegram_(method, payload) {
     payload:           JSON.stringify(payload),
     muteHttpExceptions: true,
   };
-  const response = UrlFetchApp.fetch(_apiUrl_(method), options);
+  const response = _timed_('Telegram:' + method, function () { return UrlFetchApp.fetch(_apiUrl_(method), options); });
   const code     = response.getResponseCode();
   if (code < 200 || code >= 300) {
-    console.error('Telegram API error [' + method + ']: ' + code + ' ' + response.getContentText());
+    logError_('Telegram API error [' + method + ']: ' + code + ' ' + response.getContentText());
   }
   return response;
 }
@@ -174,20 +174,20 @@ function setWebhook(webAppUrl, secretToken) {
   const payload = { url: webAppUrl };
   if (secretToken) payload.secret_token = secretToken;
   const result = _callTelegram_('setWebhook', payload);
-  console.log(result.getContentText());
+  log_(result.getContentText());
   return result.getContentText();
 }
 
 /** Removes the currently registered webhook. */
 function deleteWebhook() {
   const result = _callTelegram_('deleteWebhook', {});
-  console.log(result.getContentText());
+  log_(result.getContentText());
   return result.getContentText();
 }
 
 /** Prints current webhook info to the Apps Script execution log. */
 function getWebhookInfo() {
   const result = _callTelegram_('getWebhookInfo', {});
-  console.log(result.getContentText());
+  log_(result.getContentText());
   return result.getContentText();
 }

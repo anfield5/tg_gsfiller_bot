@@ -7,7 +7,7 @@ const path = require('node:path');
 const { createProject } = require('./harness');
 
 test('columnNumberToLetter converts 1-based column numbers to letters', () => {
-  const { context } = createProject({ files: ['Icons.js', 'TelegramApi.js', 'SheetActions.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js', 'SheetActions.js'] });
   assert.equal(context.columnNumberToLetter(1), 'A');
   assert.equal(context.columnNumberToLetter(26), 'Z');
   assert.equal(context.columnNumberToLetter(27), 'AA');
@@ -16,7 +16,7 @@ test('columnNumberToLetter converts 1-based column numbers to letters', () => {
 });
 
 test('formatPreview truncates long values and labels empties', () => {
-  const { context } = createProject({ files: ['Icons.js', 'TelegramApi.js', 'SheetActions.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js', 'SheetActions.js'] });
   assert.equal(context.formatPreview('', 10), '(empty)');
   assert.equal(context.formatPreview(null, 10), '(empty)');
   assert.equal(context.formatPreview(undefined, 10), '(empty)');
@@ -26,7 +26,7 @@ test('formatPreview truncates long values and labels empties', () => {
 });
 
 test('escapeHtml_ escapes &, < and > but leaves other characters alone', () => {
-  const { context } = createProject({ files: ['Icons.js', 'TelegramApi.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js'] });
   assert.equal(context.escapeHtml_('R&D'), 'R&amp;D');
   assert.equal(context.escapeHtml_('5 < 10 > 2'), '5 &lt; 10 &gt; 2');
   assert.equal(context.escapeHtml_('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
@@ -38,7 +38,7 @@ test('escapeHtml_ escapes &, < and > but leaves other characters alone', () => {
 });
 
 test('escapeHtml_ prevents a raw cell value from breaking Telegram HTML parse_mode', () => {
-  const { context } = createProject({ files: ['Icons.js', 'TelegramApi.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'Icons.js', 'TelegramApi.js'] });
   const cellValue = 'Q&A <urgent>';
   const message = '<b>' + context.escapeHtml_(cellValue) + '</b>';
   assert.equal(message, '<b>Q&amp;A &lt;urgent&gt;</b>');
@@ -47,7 +47,7 @@ test('escapeHtml_ prevents a raw cell value from breaking Telegram HTML parse_mo
 });
 
 test('_sanitiseCellValue_ neutralises formula-injection prefixes', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.equal(context._sanitiseCellValue_('=SUM(A1:A2)'), "'=SUM(A1:A2)");
   assert.equal(context._sanitiseCellValue_('+1234'), "'+1234");
   assert.equal(context._sanitiseCellValue_('-1234'), "'-1234");
@@ -59,7 +59,7 @@ test('_sanitiseCellValue_ neutralises formula-injection prefixes', () => {
 });
 
 test('_normaliseDateString_ converts Date-toString values to dd.MM.yyyy and passes through everything else', () => {
-  const { context } = createProject({ files: ['DataAccess.js'] });
+  const { context } = createProject({ files: ['Logging.js', 'Timing.js', 'DataAccess.js'] });
   assert.equal(context._normaliseDateString_('2026-01-01T00:00:00.000Z'), '01.01.2026');
   assert.equal(context._normaliseDateString_('Hello World'), 'Hello World');
   // Looks date-ish (contains "00:00:00") but isn't parseable — falls through unchanged.
@@ -91,6 +91,11 @@ test('formulaPlaceholderText_ is defined once and reused by both Navigation and 
 test('DEFAULT_ICONS includes GEMINI (regression: this key went missing and rendered as "undefined Gemini Analysis")', () => {
   const { context } = createProject({ files: ['Icons.js'] });
   assert.equal(context.getIcons_().GEMINI, '✨');
+});
+
+test('DEFAULT_ICONS includes HELP (used by /help — same regression class as the GEMINI icon above)', () => {
+  const { context } = createProject({ files: ['Icons.js'] });
+  assert.equal(context.getIcons_().HELP, 'ℹ️');
 });
 
 test('every icons.XXX key referenced in Navigation.js exists in DEFAULT_ICONS', () => {

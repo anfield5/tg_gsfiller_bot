@@ -19,7 +19,7 @@ as Script Properties. See comments in `Config.js.example` for every setting.
   **Previous** button steps back through already-answered fields; **Use
   last value** / **Edit last value** reuse the previous row's entry;
   **Recent TOP3 values** suggests the 3 most common of the last 10 values in
-  the column being filled, as a tap-to-copy block.
+  the column being filled, each as its own tap-to-copy value.
 - **Edit row** by picking from a paginated recent-rows list or typing a row
   number directly; formula cells are protected from inline editing.
 - **Gemini Analysis**: pick a live-fetched free-tier model, a tab, and a
@@ -32,6 +32,23 @@ as Script Properties. See comments in `Config.js.example` for every setting.
 - **`/version`** replies with the deployed code version (`BOT_VERSION` in
   `Code.js`) — a quick way to confirm the live deployment actually matches
   what you last pushed, without digging through the Executions log.
+- **Per-chat processing lock**: while an update for a chat is being
+  handled, a second update for that same chat (a Telegram webhook retry, or
+  a fast double-tap before the keyboard visibly updates) is rejected with
+  "*<button> is still in progress*" instead of racing the first one on
+  shared state — `/start`/`/cancel` always bypass and clear it.
+- **Always-on timing diagnostics** (`Timing.js`): DriveApp, `SpreadsheetApp`
+  opens, `LockService` waits, and outbound Telegram/Gemini calls each log
+  their own duration (`[timing] ...`) whenever they take ≥200ms, plus a
+  total-per-request line — so an occasional slow reply is diagnosable
+  straight from the Apps Script Executions log instead of guessing.
+- **`/log[ N]`** replies with the last `N` entries (default 10, max 100)
+  from a persistent, script-wide log ring buffer (`Logging.js`) — every
+  `[timing]` line and error logged anywhere in the bot lands here too, so
+  you can read recent diagnostics straight from Telegram without opening
+  the Apps Script editor.
+- **`/help`** lists every command above with a one-line description and an
+  example invocation.
 
 ## Known limitations
 

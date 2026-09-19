@@ -54,6 +54,9 @@ const DEFAULT_ICONS = {
 
   // Gemini Analysis
   GEMINI: '✨',
+
+  // /help
+  HELP: 'ℹ️',
 };
 
 let _iconsCache = null;

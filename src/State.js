@@ -32,7 +32,7 @@ function getState(chatId) {
   try {
     return JSON.parse(raw);
   } catch (e) {
-    console.error('Failed to parse state for chat ' + chatId + ': ' + e);
+    logError_('Failed to parse state for chat ' + chatId + ': ' + e);
     return { step: 'main_menu' };
   }
 }
@@ -208,4 +208,54 @@ function removeFavSheet(chatId, fileId, sheetName) {
  */
 function isFavSheet(chatId, fileId, sheetName) {
   return getFavSheets(chatId, fileId).includes(sheetName);
+}
+
+// ---------------------------------------------------------------------------
+// Per-chat processing lock
+//
+// Guards against two overlapping updates for the SAME chat racing on the
+// per-chat state above. This happens in practice: Telegram redelivers an
+// update if the webhook doesn't answer quickly enough, and a user
+// double-tapping a button before the keyboard visibly changes sends two
+// separate messages with the same label. Apps Script can run the resulting
+// doPost() executions concurrently; getState/setState are plain
+// PropertiesService read-then-write with no compare-and-swap, so whichever
+// execution finishes LAST silently overwrites what the other one just
+// saved. In practice that produces exactly two symptoms: a tapped button
+// matching nothing in state.currentOptions ("Please pick an option…" for a
+// button that's plainly on screen), and a repeated press that never gets a
+// reply at all. A CacheService flag per chat, checked before any state
+// read, turns "two racing executions" into "the second one bails out
+// immediately with a clear message" instead.
+// ---------------------------------------------------------------------------
+
+const INFLIGHT_PREFIX_      = 'inflight:';
+const INFLIGHT_TTL_SECONDS_ = 30; // self-heals a stuck lock even if a run is ever killed before its `finally`
+
+/**
+ * Attempts to mark `chatId` as busy processing `label`. Returns `null` if
+ * the lock was acquired — the caller MUST release it via releaseChatLock_
+ * in a `finally` block once done — or the label of whatever update is
+ * still being processed if the chat was already locked.
+ *
+ * @param {string} chatId
+ * @param {string} label  human-readable name of what's being processed
+ *   (the tapped button's label / command text) — shown back to the user if
+ *   a second update for this chat arrives while this one is still running.
+ * @returns {string|null}
+ */
+function tryAcquireChatLock_(chatId, label) {
+  const cache    = CacheService.getScriptCache();
+  const key      = INFLIGHT_PREFIX_ + chatId;
+  const existing = cache.get(key);
+  if (existing) return existing;
+  try { cache.put(key, label || 'Request', INFLIGHT_TTL_SECONDS_); }
+  catch (e) { /* best-effort — a caching failure must never block real processing */ }
+  return null;
+}
+
+/** Releases the per-chat processing lock. Always call from a `finally`. */
+function releaseChatLock_(chatId) {
+  try { CacheService.getScriptCache().remove(INFLIGHT_PREFIX_ + chatId); }
+  catch (e) { /* best-effort */ }
 }

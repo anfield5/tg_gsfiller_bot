@@ -27,7 +27,9 @@ function getFolderInfo(folderId) {
   const cached = cache.get(cacheKey);
   if (cached) return { id: folderId, name: cached };
 
-  const name = DriveApp.getFolderById(folderId).getName();
+  const name = _timed_('DriveApp.getFolderById:' + folderId, function () {
+    return DriveApp.getFolderById(folderId).getName();
+  });
   try { cache.put(cacheKey, name, 3600); } catch (e) { /* ignore */ }
   return { id: folderId, name: name };
 }
@@ -59,9 +61,11 @@ function listSpreadsheetsInFolder(folderId, forceRefresh) {
   const depth = (CONFIG && CONFIG.FOLDER_SCAN_DEPTH !== undefined) ? CONFIG.FOLDER_SCAN_DEPTH : 1;
 
   try {
-    _collectSheetsRecursive_(DriveApp.getFolderById(folderId), files, depth);
+    _timed_('DriveApp scan (depth ' + depth + '):' + folderId, function () {
+      _collectSheetsRecursive_(DriveApp.getFolderById(folderId), files, depth);
+    });
   } catch (e) {
-    console.error('listSpreadsheetsInFolder failed: ' + e);
+    logError_('listSpreadsheetsInFolder failed: ' + e);
   }
 
   files.sort((a, b) => a.name.localeCompare(b.name));
@@ -74,7 +78,7 @@ function listSpreadsheetsInFolder(folderId, forceRefresh) {
     // if a given setup genuinely adds/removes files more often than that.
     cache.put(cacheKey, JSON.stringify(files), CONFIG.FOLDER_CACHE_TTL_SECONDS || 3600);
   } catch (e) {
-    console.error('Cache write error (folderFiles): ' + e);
+    logError_('Cache write error (folderFiles): ' + e);
   }
 
   return files;
@@ -132,11 +136,6 @@ function listSheetsInFile(fileId) {
   return names;
 }
 
-/** Clears the cached sheet list for a spreadsheet. */
-function clearSheetListCache(fileId) {
-  CacheService.getScriptCache().remove('sheetList:' + fileId);
-}
-
 /**
  * Returns the numeric GID of a sheet tab (used to build direct links).
  * @param {string} fileId
@@ -145,23 +144,6 @@ function clearSheetListCache(fileId) {
  */
 function getSheetGid(fileId, sheetName) {
   return _getSheet_(fileId, sheetName).getSheetId();
-}
-
-/**
- * Returns the header labels for a sheet. Cached for 2 minutes.
- * Only row 1 is read here — multi-row / merged header parsing lives in
- * SheetActions.actionGetHeaders() which calls this for raw values.
- *
- * @param {string} fileId
- * @param {string} sheetName
- * @returns {string[]} trimmed, non-empty values from row 1
- */
-function getHeaderRow(fileId, sheetName) {
-  const sheet   = _getSheet_(fileId, sheetName);
-  const lastCol = sheet.getLastColumn();
-  if (lastCol === 0) return [];
-  const values = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
-  return values.map(v => String(v).trim()).filter(v => v.length > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -360,9 +342,16 @@ function getRangeValues(fileId, sheetName, a1Range, maxRows) {
  */
 function appendRowToSheet(fileId, sheetName, values) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  // Timed separately from the write itself: a long wait here means another
+  // execution is holding the script-wide lock (e.g. two admins saving at
+  // once, or two overlapping updates for the same chat before the v1.7.2
+  // per-chat lock existed) — a genuinely different cause of slowness than
+  // Sheets itself being slow to write.
+  _timed_('LockService.waitLock (append):' + sheetName, function () { lock.waitLock(15000); });
   try {
-    _getSheet_(fileId, sheetName).appendRow(values.map(_sanitiseCellValue_));
+    _timed_('sheet.appendRow:' + sheetName, function () {
+      _getSheet_(fileId, sheetName).appendRow(values.map(_sanitiseCellValue_));
+    });
   } finally {
     lock.releaseLock();
   }
@@ -380,9 +369,11 @@ function appendRowToSheet(fileId, sheetName, values) {
  */
 function updateCell(fileId, sheetName, rowIndex, colIndex, value) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  _timed_('LockService.waitLock (update):' + sheetName, function () { lock.waitLock(15000); });
   try {
-    _getSheet_(fileId, sheetName).getRange(rowIndex, colIndex).setValue(_sanitiseCellValue_(value));
+    _timed_('sheet.setValue:' + sheetName, function () {
+      _getSheet_(fileId, sheetName).getRange(rowIndex, colIndex).setValue(_sanitiseCellValue_(value));
+    });
   } finally {
     lock.releaseLock();
   }
@@ -405,7 +396,7 @@ function isCellFormula(fileId, sheetName, rowIndex, colIndex) {
     const formula = _getSheet_(fileId, sheetName).getRange(rowIndex, colIndex).getFormula();
     return !!(formula && formula.toString().trim().startsWith('='));
   } catch (e) {
-    console.error('isCellFormula failed: ' + e);
+    logError_('isCellFormula failed: ' + e);
     return false;
   }
 }
@@ -428,7 +419,7 @@ function getRowFormulaFlags(fileId, sheetName, rowIndex, numCols) {
     const formulas = _getSheet_(fileId, sheetName).getRange(rowIndex, 1, 1, numCols).getFormulas()[0];
     return formulas.map((f) => !!(f && f.toString().trim().startsWith('=')));
   } catch (e) {
-    console.error('getRowFormulaFlags failed: ' + e);
+    logError_('getRowFormulaFlags failed: ' + e);
     return new Array(numCols).fill(false);
   }
 }
@@ -451,7 +442,7 @@ function isCellTrailingMerge(fileId, sheetName, rowIndex, colIndex) {
     const topLeft = cell.getMergedRanges()[0].getCell(1, 1);
     return topLeft.getColumn() < colIndex;
   } catch (e) {
-    console.error('isCellTrailingMerge failed: ' + e);
+    logError_('isCellTrailingMerge failed: ' + e);
     return false;
   }
 }
@@ -546,7 +537,14 @@ function _getSheet_(fileId, sheetName) {
   const key = fileId + '' + sheetName;
   if (_sheetMemo_[key]) return _sheetMemo_[key];
 
-  const ss    = SpreadsheetApp.openById(fileId);
+  // The single biggest, least avoidable source of "why is this slow" —
+  // opening a spreadsheet cold takes anywhere from a few hundred ms to
+  // tens of seconds depending on its size/complexity (sheet count,
+  // formatting, formulas), and this happens on nearly every action since
+  // _sheetMemo_ only helps WITHIN one execution, not across separate
+  // Telegram updates. Timed unconditionally so a slow update is
+  // diagnosable straight from the Executions log.
+  const ss    = _timed_('SpreadsheetApp.openById:' + fileId, function () { return SpreadsheetApp.openById(fileId); });
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) throw new Error('Sheet "' + sheetName + '" not found.');
 

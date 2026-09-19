@@ -20,6 +20,8 @@ const SRC_DIR = path.join(__dirname, '..', 'src');
 // `const` declarations with no cross-file dependency), any order that loads
 // each file once works. Kept in rough dependency order for readability.
 const DEFAULT_FILES = [
+  'Logging.js',
+  'Timing.js',
   'Icons.js',
   'TelegramApi.js',
   'GeminiApi.js',
@@ -54,8 +56,22 @@ function createProject(overrides) {
     ? mocks.createSpreadsheetAppMock(overrides.SpreadsheetApp)
     : {};
 
+  // Node's vm module only proxies a context's OWN properties back to the
+  // sandbox object handed to createContext — built-ins the new realm sets up
+  // for itself (Date, Math, JSON, ...) are visible to code running *inside*
+  // the context but not as `context.Date` from the outside. Several tests
+  // fake the clock via `context.Date.now = ...` (Timing.js's _timed_, now
+  // also exercised indirectly through Logging.js's timestamped ring buffer),
+  // so Date must be seeded here explicitly. A per-call subclass (rather than
+  // the real global Date itself) means a test overwriting `.now` only
+  // affects its own context, not the real Date.now used by every other test
+  // and by Node itself.
+  class ContextDate extends Date {}
+  ContextDate.now = Date.now.bind(Date);
+
   const sandbox = {
     console,
+    Date: ContextDate,
     CONFIG: overrides.CONFIG || {
       FOLDER_IDS: [], FOLDER_LABELS: [], FILES_PER_PAGE: 10,
       FOLDER_CACHE_TTL_SECONDS: 300, FOLDER_SCAN_DEPTH: 1,
@@ -69,9 +85,14 @@ function createProject(overrides) {
     ContentService: { createTextOutput: (t) => ({ text: t }) },
     Utilities: {
       // Deterministic, UTC-based stand-in for GAS's Utilities.formatDate.
-      // Only the 'dd.MM.yyyy' pattern used by DataAccess.js is supported.
-      formatDate(date /*, timeZone, pattern */) {
+      // Only the two patterns actually used in src/*.js are supported:
+      // 'dd.MM.yyyy' (DataAccess.js) and 'HH:mm:ss' (Logging.js's timestamp
+      // prefix).
+      formatDate(date, timeZone, pattern) {
         const pad = (n) => String(n).padStart(2, '0');
+        if (pattern === 'HH:mm:ss') {
+          return pad(date.getUTCHours()) + ':' + pad(date.getUTCMinutes()) + ':' + pad(date.getUTCSeconds());
+        }
         return pad(date.getUTCDate()) + '.' + pad(date.getUTCMonth() + 1) + '.' + date.getUTCFullYear();
       },
     },
