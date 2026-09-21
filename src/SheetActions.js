@@ -9,14 +9,19 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Parses column headers from rows 1 and 2, resolving merged cells so that
- * every column maps to exactly one label (prevents off-by-one field shifts).
+ * Parses column headers from however many rows are frozen at the top of the
+ * sheet (Sheet.getFrozenRows()) — not a fixed guess — so a single-row header
+ * and a multi-row header both resolve correctly without misreading a data
+ * row as part of the header. A sheet with no frozen rows still needs *some*
+ * header, so that case falls back to row 1 alone. Merged cells in row 1 are
+ * resolved so that every column they span maps to one consistent label.
  *
- * Label rules:
- *   - Merged top-row cell: use its text for all columns it spans
- *   - Two distinct non-empty rows: "TopHeader (BottomHeader)"
- *   - Only one row has a value: use that value
- *   - Neither row has a value: "Column N"
+ * Label rules (per column, across all frozen rows top to bottom):
+ *   - Merged row-1 cell: use its text for all columns it spans
+ *   - Blank rows are dropped; an exact repeat keeps only its first occurrence
+ *   - One distinct value left: use it
+ *   - 2+ distinct values left: "First (Second, Third, ...)"
+ *   - Nothing left (every frozen row blank for this column): "Column N"
  *
  * @param {string} fileId
  * @param {string} sheetName
@@ -30,37 +35,40 @@ function actionGetHeaders(fileId, sheetName) {
   if (cached) return JSON.parse(cached);
 
   try {
-    // We need direct Sheet access here for the 2-row + merge read.
+    // We need direct Sheet access here for the frozen-row + merge read.
     // _getSheet_ is a DataAccess private but accessible within the same GAS project.
     const sheet   = _getSheet_(fileId, sheetName);
     const maxCols = sheet.getLastColumn();
     if (maxCols === 0) return [];
 
-    const range        = sheet.getRange(1, 1, 2, maxCols);
+    const frozenRows   = Math.max(1, sheet.getFrozenRows());
+    const range        = sheet.getRange(1, 1, frozenRows, maxCols);
     const values       = range.getValues();
     const mergedRanges = range.getMergedRanges();
 
     const headers = [];
 
     for (let col = 1; col <= maxCols; col++) {
-      let top    = String(values[0][col - 1]).trim();
-      let bottom = String(values[1][col - 1]).trim();
+      const rowTexts = [];
 
-      // If this column falls inside a row-1 merge, use the anchor cell's text.
-      mergedRanges.forEach(mr => {
-        if (mr.getRow() <= 1 &&
-            col >= mr.getColumn() && col <= mr.getLastColumn()) {
-          top = String(mr.getCell(1, 1).getValue()).trim();
+      for (let row = 1; row <= frozenRows; row++) {
+        let text = String(values[row - 1][col - 1]).trim();
+
+        // A row-1 merge spanning columns anchors every column it covers to
+        // the same text. Merges below row 1 aren't resolved — same scope
+        // this had before, just no longer tied to a hardcoded 2-row read.
+        if (row === 1) {
+          mergedRanges.forEach(mr => {
+            if (mr.getRow() <= 1 && col >= mr.getColumn() && col <= mr.getLastColumn()) {
+              text = String(mr.getCell(1, 1).getValue()).trim();
+            }
+          });
         }
-      });
 
-      let label;
-      if (top && bottom && top !== bottom) {
-        label = top + ' (' + bottom + ')';
-      } else {
-        label = top || bottom || ('Column ' + col);
+        rowTexts.push(text);
       }
-      headers.push(label);
+
+      headers.push(_combineHeaderRowTexts_(rowTexts, col));
     }
 
     try { cache.put(cacheKey, JSON.stringify(headers), 120); } catch (e) { /* ignore */ }
@@ -69,6 +77,26 @@ function actionGetHeaders(fileId, sheetName) {
     logError_('actionGetHeaders failed: ' + e);
     throw new Error('Could not read column headers: ' + e.message);
   }
+}
+
+/**
+ * Combines one column's text across every frozen header row into a single
+ * label — see actionGetHeaders' label rules above. A direct generalization
+ * of the old hardcoded "Top (Bottom)" 2-row rule to however many rows are
+ * actually frozen.
+ * @param {string[]} rowTexts  trimmed cell text, one per frozen row, top to bottom
+ * @param {number}   col       1-based column number, for the "Column N" fallback
+ * @returns {string}
+ */
+function _combineHeaderRowTexts_(rowTexts, col) {
+  const distinct = [];
+  rowTexts.forEach(text => {
+    if (text && distinct.indexOf(text) === -1) distinct.push(text);
+  });
+
+  if (distinct.length === 0) return 'Column ' + col;
+  if (distinct.length === 1) return distinct[0];
+  return distinct[0] + ' (' + distinct.slice(1).join(', ') + ')';
 }
 
 // ---------------------------------------------------------------------------

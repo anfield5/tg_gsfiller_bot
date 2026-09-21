@@ -11,29 +11,20 @@
 // actually running" without needing the Executions log or a manual
 // diagnostic function.
 //
-// v1.7.2 — changes since v1.7.1 (no intermediate version was ever actually
-// pushed/tagged, so this release folds it all in at once):
-//  - Per-chat processing lock: a second update for a chat that's still
-//    being processed is rejected instead of racing the first one.
-//  - Fixes misrouted taps ("Please pick an option…" on a visible button)
-//    and silently dropped double-taps caused by that race.
-//  - /start and /cancel bypass the lock AND clear it if it's stuck.
-//  - /version and /log bypass the lock too, but never touch it (read-only).
-//  - Always-on timing diagnostics (Timing.js): logs duration for Drive
-//    scans, SpreadsheetApp opens, LockService waits, Telegram/Gemini calls.
-//  - Only logs when a call takes >=200ms, plus one total-per-request line.
-//  - New /log[ N] command: replies with the last N log entries (default
-//    10, max 100).
-//  - Backed by a new persistent, script-wide log ring buffer
-//    (Logging.js, CacheService-based).
-//  - Every console.log/console.error/Logger.log call site now routes
-//    through log_/logError_, so /log genuinely captures everything.
-//  - New /help command: lists every command with a description and an
-//    example invocation.
-//  - Removed 2 dead, never-called functions: clearSheetListCache,
-//    getHeaderRow.
-//  - Test suite grew from 96 to 154 tests, covering all of the above.
-const BOT_VERSION = '1.7.2';
+// v1.7.2 — changes since v1.7.1:
+//  - Per-chat lock: blocks a racing double-update, fixes misrouted taps.
+//  - /start /cancel clear the lock; /version /log bypass it read-only.
+//  - Timing diagnostics (Timing.js): logs slow (>=200ms) calls + totals.
+//  - New /log[ N] command, backed by a persistent log ring buffer.
+//  - All logging routed through log_/logError_ so /log sees everything.
+//  - New /help command: lists all commands with a usage example.
+//  - Removed 2 dead functions; test suite grew 96 -> 154.
+//
+// v1.7.3 — changes since v1.7.2:
+//  - Headers now read from Sheet.getFrozenRows(), not a hardcoded 2 rows —
+//    fixes 1-row-header sheets misreading their first data row as header.
+//  - Test suite grew 154 -> 158.
+const BOT_VERSION = '1.7.3';
 
 // ---------------------------------------------------------------------------
 // Webhook entry-point

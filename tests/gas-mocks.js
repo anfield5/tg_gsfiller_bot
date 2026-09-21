@@ -182,6 +182,12 @@ function makeSheetMock(spec) {
     getLastColumn: () => Math.max(0, ...(spec.values || []).map(r => r.length)),
     getLastRow: () => (spec.values || []).length,
     getSheetId: () => spec.gid || 0,
+    // Defaults to 2 (not real GAS's 0-frozen-rows-by-default) purely to
+    // keep every existing fixture's header-parsing expectations unchanged
+    // — most fixtures were written assuming the old hardcoded 2-row read.
+    // Tests exercising the frozen-row-driven behavior set spec.frozenRows
+    // explicitly.
+    getFrozenRows: () => (spec.frozenRows !== undefined ? spec.frozenRows : 2),
     getRange(row, col, numRows, numCols) {
       return makeRangeMock(spec, row, col, numRows || 1, numCols || 1);
     },

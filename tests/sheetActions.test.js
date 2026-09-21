@@ -55,6 +55,54 @@ test('actionGetHeaders: a row-1 merge spanning columns applies the anchor label 
   );
 });
 
+// ---------------------------------------------------------------------------
+// actionGetHeaders: header rows now come from Sheet.getFrozenRows(), not a
+// hardcoded 2 — the tests above all rely on the mock's default frozenRows
+// of 2 (see gas-mocks.js) to keep exercising that exact case unchanged.
+// These tests set spec.frozenRows explicitly to cover the dynamic behavior.
+// ---------------------------------------------------------------------------
+
+test('actionGetHeaders: 1 frozen row reads only row 1, even when row 2 already holds real data', () => {
+  // Under the old hardcoded "always read rows 1-2" behavior this would have
+  // wrongly folded the first data row into the header — the whole point of
+  // switching to getFrozenRows().
+  const { context } = projectWithSheet({
+    name: 'Sheet1',
+    frozenRows: 1,
+    values: [['Name', 'Status'], ['Alice', 'Open']],
+  });
+  assert.deepEqual(context.actionGetHeaders('file1', 'Sheet1'), ['Name', 'Status']);
+});
+
+test('actionGetHeaders: 0 frozen rows still falls back to row 1 alone as the header', () => {
+  const { context } = projectWithSheet({
+    name: 'Sheet1',
+    frozenRows: 0,
+    values: [['Name', 'Status'], ['Alice', 'Open']],
+  });
+  assert.deepEqual(context.actionGetHeaders('file1', 'Sheet1'), ['Name', 'Status']);
+});
+
+test('actionGetHeaders: 3 frozen rows combine as "First (Second, Third)"', () => {
+  const { context } = projectWithSheet({
+    name: 'Sheet1',
+    frozenRows: 3,
+    values: [['Sales', 'Sales'], ['2026', '2026'], ['Q1', 'Q2']],
+  });
+  assert.deepEqual(context.actionGetHeaders('file1', 'Sheet1'), ['Sales (2026, Q1)', 'Sales (2026, Q2)']);
+});
+
+test('actionGetHeaders: 3 frozen rows drop blank rows and dedupe exact repeats, not just adjacent ones', () => {
+  const { context } = projectWithSheet({
+    name: 'Sheet1',
+    frozenRows: 3,
+    values: [['Name', 'Total'], ['', ''], ['Name', 'USD']],
+  });
+  // Column 1: "Name" repeats (row 1 and row 3) with a blank row in between —
+  // still collapses to a single "Name", not "Name (Name)".
+  assert.deepEqual(context.actionGetHeaders('file1', 'Sheet1'), ['Name', 'Total (USD)']);
+});
+
 test('actionGetHeaders: results are cached (a second call does not re-read the sheet)', () => {
   const { context } = projectWithSheet({ name: 'Sheet1', values: [['A', 'B']] });
   let opens = 0;
