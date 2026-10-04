@@ -570,44 +570,50 @@ function handlePrevField(chatId) {
 }
 
 /**
- * "Recent TOP3 values" — looks at the last 10 values already entered in the
- * column currently being filled, ranks them by frequency, and sends the
- * top 3 as separate tap-to-copy <code> spans, one per line. Each value gets
- * its OWN <code>...</code> tag (rather than one block holding all three
- * separated by newlines) so tapping any single line copies just that value —
- * Telegram's tap-to-copy only covers the span you actually tap. Does NOT
- * advance the flow: the same field prompt (with the same keyboard) is
- * re-rendered afterwards, so the user can tap-copy, paste, and edit before
- * submitting.
+ * Looks at the last 10 values already entered in a column, ranks them by
+ * frequency, and sends the top 3 as separate tap-to-copy <code> spans, one
+ * per line. Each value gets its OWN <code>...</code> tag (rather than one
+ * block holding all three separated by newlines) so tapping any single line
+ * copies just that value — Telegram's tap-to-copy only covers the span you
+ * actually tap. Shared by the add-row and edit-row flows ("Recent TOP3
+ * values" button); the caller re-renders its own field prompt afterwards —
+ * this never advances or changes either flow's state.
  * @param {string} chatId
+ * @param {string} fileId
+ * @param {string} sheetName
+ * @param {number} colIndex   1-based column number
+ * @param {string} fieldName  column label, for the message text
  */
-function handleTop3Values(chatId) {
-  const state   = getState(chatId);
-  const headers = state.headers || [];
-  const idx     = state.currentFieldIndex || 0;
-  const icons   = getIcons_();
-
+function _sendTop3ValuesMessage_(chatId, fileId, sheetName, colIndex, fieldName) {
+  const icons = getIcons_();
   let top3 = [];
   try {
-    top3 = actionTopFrequentColumnValues(state.fileId, state.sheetName, idx + 1, 10, 3);
+    top3 = actionTopFrequentColumnValues(fileId, sheetName, colIndex, 10, 3);
   } catch (e) {
     sendMessage(chatId, icons.WARNING + ' ' + escapeHtml_(e.message));
-    sendFieldPrompt(chatId, state);
     return;
   }
 
   if (!top3.length) {
-    sendMessage(chatId, icons.CHART + ' No recent values found for <b>' + escapeHtml_(headers[idx]) + '</b>.');
-  } else {
-    const valueLines = top3.map(function (v) { return '<code>' + escapeHtml_(v) + '</code>'; }).join('\n');
-    sendMessage(
-      chatId,
-      icons.CHART + ' <b>Top ' + top3.length + ' recent values for ' + escapeHtml_(headers[idx]) + ':</b>\n\n' +
-      icons.POINTER + ' <b>Tap a value to copy it</b>, then paste the one you want:\n\n' +
-      valueLines
-    );
+    sendMessage(chatId, icons.CHART + ' No recent values found for <b>' + escapeHtml_(fieldName) + '</b>.');
+    return;
   }
 
+  const valueLines = top3.map(function (v) { return '<code>' + escapeHtml_(v) + '</code>'; }).join('\n');
+  sendMessage(
+    chatId,
+    icons.CHART + ' <b>Top ' + top3.length + ' recent values for ' + escapeHtml_(fieldName) + ':</b>\n\n' +
+    icons.POINTER + ' <b>Tap a value to copy it</b>, then paste the one you want:\n\n' +
+    valueLines
+  );
+}
+
+/** "Recent TOP3 values" button — add-row flow. See _sendTop3ValuesMessage_. */
+function handleTop3Values(chatId) {
+  const state   = getState(chatId);
+  const headers = state.headers || [];
+  const idx     = state.currentFieldIndex || 0;
+  _sendTop3ValuesMessage_(chatId, state.fileId, state.sheetName, idx + 1, headers[idx]);
   sendFieldPrompt(chatId, state); // stay on the same field/keyboard
 }
 
@@ -773,6 +779,7 @@ function handleEditRowManualInput(chatId, state, text) {
     state.rowValues = values;
     state.headers   = headers;
     state.step      = 'edit_row_view';
+    _loadLastRowValuesForEdit_(state);
     setState(chatId, state);
     renderRowView(chatId, state);
   } catch (e) {
@@ -796,7 +803,26 @@ function handleEditRowSelect(chatId, rowIndex) {
   state.rowIndex  = rowIndex;
   state.rowValues = values;
   state.headers   = headers;
+  _loadLastRowValuesForEdit_(state);
   renderRowView(chatId, state);
+}
+
+/**
+ * Fetches the sheet's most recent row (for "Use last value"/"Edit last
+ * value" suggestions on the edit-field prompt below — same concept the
+ * add-row flow uses) and stores it on state. Called once per edit session
+ * (here, not per field) so picking between fields doesn't cost a Sheets
+ * call per tap. Best-effort: a failure here just means those two buttons
+ * won't show, never blocks editing itself.
+ * @param {Object} state
+ */
+function _loadLastRowValuesForEdit_(state) {
+  try {
+    const lastRows = actionGetLastRows(state.fileId, state.sheetName, 1);
+    state.lastRowValues = (lastRows.length > 0) ? lastRows[0].values : null;
+  } catch (e) {
+    state.lastRowValues = null;
+  }
 }
 
 function renderRowView(chatId, state) {
@@ -832,22 +858,142 @@ function handleEditFieldSelect(chatId, colIndex) {
     return;
   }
 
-  const headers      = state.headers || [];
-  const currentValue = state.rowValues[colIndex - 1] || '';
-  const fieldName    = headers[colIndex - 1] || 'Column ' + colIndex;
-
-  state.step     = 'edit_field_wait';
+  state.step     = 'edit_filling';
   state.colIndex = colIndex;
   setState(chatId, state);
 
-  _renderMenu(chatId, state, 'Opening editor for: ' + escapeHtml_(fieldName), []);
+  sendEditFieldPrompt(chatId, state);
+}
 
+/**
+ * The edit-row equivalent of the add-row flow's sendFieldPrompt: shows the
+ * current value plus the same conveniences — Recent TOP3 values, Use/Edit
+ * last value (from the sheet's most recent row, loaded once by
+ * _loadLastRowValuesForEdit_), and Next/Previous to jump directly between
+ * editable columns of this row without returning to the full field list.
+ * A typed reply is still accepted directly (handleMessage's 'edit_filling'
+ * branch falls back to handleEditFieldInput when the text doesn't match a
+ * button), exactly like the add-row flow's free-text fallback.
+ */
+function sendEditFieldPrompt(chatId, state) {
+  const icons        = getIcons_();
+  const headers      = state.headers || [];
+  const colIndex     = state.colIndex;
+  const idx          = colIndex - 1;
+  const fieldName    = headers[idx] || ('Column ' + colIndex);
+  const currentValue = (state.rowValues && state.rowValues[idx]) || '';
+
+  const keyboardRows = [];
+
+  keyboardRows.push([
+    { label: icons.CHART + ' Recent TOP3 values', value: 'top3_values_edit' },
+  ]);
+
+  const lastVal = (state.lastRowValues && state.lastRowValues[idx] !== undefined)
+    ? String(state.lastRowValues[idx])
+    : '';
+  if (lastVal.trim().length > 0) {
+    keyboardRows.push([
+      { label: icons.USE_LAST + ' Use: ' + formatPreview(lastVal, 15), value: 'use_last_direct_edit'     },
+      { label: icons.EDIT + ' Edit Last Value',                        value: 'use_last_edit_request_edit' },
+    ]);
+  }
+
+  const navRow = [];
+  if (_findAdjacentEditableCol_(state, colIndex, -1) > 0) {
+    navRow.push({ label: icons.PREV_FIELD + ' Previous', value: 'edit_prev_field' });
+  }
+  if (_findAdjacentEditableCol_(state, colIndex, 1) > 0) {
+    navRow.push({ label: icons.NEXT_PAGE + ' Next', value: 'edit_next_field' });
+  }
+  if (navRow.length) keyboardRows.push(navRow);
+
+  // Returns to the full list of this row's fields (renderRowView). Named
+  // "All fields" rather than "Back" so it's unambiguous that it goes to the
+  // field list, not up to the row list.
+  keyboardRows.push([{ label: icons.FIELDS + ' All fields', value: 'back:rowview' }]);
+
+  _renderMenu(
+    chatId,
+    state,
+    icons.EDIT + ' Editing <b>' + escapeHtml_(fieldName) + '</b> in row ' + state.rowIndex + '.\n\n' +
+    'Current value — tap to copy, then reply with the new value, or use a button below:\n<code>' + escapeHtml_(currentValue) + '</code>',
+    keyboardRows
+  );
+}
+
+/** "Recent TOP3 values" button — edit-row flow. See _sendTop3ValuesMessage_. */
+function handleEditTop3Values(chatId) {
+  const state   = getState(chatId);
+  const headers = state.headers || [];
+  const idx     = (state.colIndex || 1) - 1;
+  _sendTop3ValuesMessage_(chatId, state.fileId, state.sheetName, idx + 1, headers[idx]);
+  sendEditFieldPrompt(chatId, state); // stay on the same field/keyboard
+}
+
+/** "Edit Last Value" button — edit-row flow equivalent of handleUseLastEditRequest. */
+function handleEditUseLastEditRequest(chatId) {
+  const state     = getState(chatId);
+  const headers   = state.headers || [];
+  const idx       = (state.colIndex || 1) - 1;
+  const fieldName = headers[idx] || ('Column ' + state.colIndex);
+  const lastVal   = state.lastRowValues ? String(state.lastRowValues[idx]) : '';
+
+  // Reuses 'edit_field_wait' — handleMessage already routes that step's
+  // free text straight to handleEditFieldInput, which is exactly what
+  // pasting-then-editing the last value needs.
+  state.step = 'edit_field_wait';
+  setState(chatId, state);
+
+  _renderMenu(chatId, state, 'Preparing editor…', []);
+
+  const icons = getIcons_();
   _renderForceReply(
     chatId,
-    getIcons_().EDIT + ' Editing <b>' + escapeHtml_(fieldName) + '</b> in row ' + state.rowIndex + '.\n\n' +
-    'Current value — tap to copy, then reply with the new value:\n<code>' + escapeHtml_(currentValue) + '</code>',
-    'Type new value…'
+    icons.EDIT + ' Editing value for: <b>' + escapeHtml_(fieldName) + '</b>\n\n' +
+    icons.POINTER + ' <b>Tap the code block to copy</b>, paste into chat, edit, then send:\n\n' +
+    '<code>' + escapeHtml_(lastVal) + '</code>',
+    'Paste and edit value…'
   );
+}
+
+/**
+ * True when a column can actually be edited inline during the edit-row
+ * flow: not a trailing merged cell (shares data with the cell to its left)
+ * and not a formula (protected from inline editing — see
+ * handleEditFieldSelect). Used by Next/Previous to skip straight to a real
+ * field instead of landing on one that would just show a warning.
+ */
+function _isEditableColumn_(state, colIndex) {
+  if (isCellTrailingMerge(state.fileId, state.sheetName, state.rowIndex, colIndex)) return false;
+  if (isCellFormula(state.fileId, state.sheetName, state.rowIndex, colIndex)) return false;
+  return true;
+}
+
+/**
+ * Walks from `fromCol` in `step` direction (+1/-1) to the nearest editable
+ * column (see _isEditableColumn_), or -1 if there isn't one before running
+ * off either end of the header row.
+ */
+function _findAdjacentEditableCol_(state, fromCol, step) {
+  const headers = state.headers || [];
+  let col = fromCol + step;
+  while (col >= 1 && col <= headers.length) {
+    if (_isEditableColumn_(state, col)) return col;
+    col += step;
+  }
+  return -1;
+}
+
+/** "Next"/"Previous" buttons — edit-row flow. direction is +1 or -1. */
+function handleEditAdjacentField(chatId, direction) {
+  const state  = getState(chatId);
+  const target = _findAdjacentEditableCol_(state, state.colIndex, direction);
+  if (target > 0) {
+    state.colIndex = target;
+    setState(chatId, state);
+  }
+  sendEditFieldPrompt(chatId, state); // no-op re-render if there was nothing to move to
 }
 
 function handleEditFieldInput(chatId, state, text) {
@@ -1220,6 +1366,7 @@ function handleBack(chatId, target) {
     case 'sheets':    renderSheetList(chatId, state, null);       break;
     case 'sheetmenu': showSheetMenu(chatId, state);               break;
     case 'editrow':   _loadAndRenderRowList(chatId, state);       break;
+    case 'rowview':   renderRowView(chatId, state);               break;
     default:          showMainMenu(chatId);
   }
 }

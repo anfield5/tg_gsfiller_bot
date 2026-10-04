@@ -57,6 +57,9 @@ const DEFAULT_ICONS = {
 
   // /help
   HELP: 'ℹ️',
+
+  // Edit-row field prompt: back to the full list of this row's fields
+  FIELDS: '📋',
 };
 
 let _iconsCache = null;

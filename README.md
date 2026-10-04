@@ -21,7 +21,11 @@ as Script Properties. See comments in `Config.js.example` for every setting.
   **Recent TOP3 values** suggests the 3 most common of the last 10 values in
   the column being filled, each as its own tap-to-copy value.
 - **Edit row** by picking from a paginated recent-rows list or typing a row
-  number directly; formula cells are protected from inline editing.
+  number directly; formula cells are protected from inline editing. Editing
+  a field offers the same conveniences as add-row: **Recent TOP3 values**,
+  **Use/Edit last value**, and **Next/Previous** to jump straight between
+  this row's editable columns (skipping formula and trailing-merge cells)
+  without returning to the full field list each time.
 - **Gemini Analysis**: pick a live-fetched free-tier model, a tab, and a
   Row/Column/Range to look at, then describe in plain language what you
   want (filtering included — Gemini applies it, the bot doesn't

@@ -24,7 +24,14 @@
 //  - Headers now read from Sheet.getFrozenRows(), not a hardcoded 2 rows —
 //    fixes 1-row-header sheets misreading their first data row as header.
 //  - Test suite grew 154 -> 158.
-const BOT_VERSION = '1.7.3';
+//
+// v1.7.4 — changes since v1.7.3:
+//  - Edit-row field prompt now matches add-row: Recent TOP3 values,
+//    Use/Edit last value, and Next/Previous between this row's editable
+//    columns (formula + trailing-merge cells are skipped automatically).
+//  - "All fields" button returns to the full field list of the row.
+//  - Test suite grew 158 -> 168.
+const BOT_VERSION = '1.7.4';
 
 // ---------------------------------------------------------------------------
 // Webhook entry-point
@@ -124,7 +131,25 @@ function handleMessage(message) {
       return;
     }
 
-    // User is typing a new value for an existing cell.
+    // User is on the edit-row field prompt (TOP3 / Use Last / Edit Last /
+    // Next / Previous buttons, same button-then-free-text-fallback pattern
+    // as 'add_filling' above).
+    if (state.step === 'edit_filling') {
+      const useLastPrefix = getIcons_().USE_LAST + ' Use:';
+      const options = state.currentOptions || [];
+      const matched = options.find(
+        o => o.label === text || (o.label.startsWith(useLastPrefix) && text.startsWith(useLastPrefix))
+      );
+      if (matched) {
+        routeAction(chatId, matched.value);
+      } else {
+        handleEditFieldInput(chatId, state, text);
+      }
+      return;
+    }
+
+    // User is typing a new value for an existing cell (ForceReply path —
+    // "Edit Last Value" on either flow lands here too).
     if (state.step === 'edit_field_wait') {
       handleEditFieldInput(chatId, state, text);
       return;
@@ -254,6 +279,27 @@ function routeAction(chatId, value) {
       proceedOrReviewAdd(chatId, state);
       break;
     }
+
+    // --- Edit-row field prompt: same conveniences as the add-row flow
+    // above, applied to the "editing one cell of an existing row" context. ---
+    case 'use_last_direct_edit': {
+      const idx = (state.colIndex || 1) - 1;
+      const lastVal = state.lastRowValues ? String(state.lastRowValues[idx]) : '';
+      handleEditFieldInput(chatId, state, lastVal);
+      break;
+    }
+    case 'use_last_edit_request_edit':
+      handleEditUseLastEditRequest(chatId);
+      break;
+    case 'top3_values_edit':
+      handleEditTop3Values(chatId);
+      break;
+    case 'edit_next_field':
+      handleEditAdjacentField(chatId, 1);
+      break;
+    case 'edit_prev_field':
+      handleEditAdjacentField(chatId, -1);
+      break;
 
     // --- Favorites ---
     case 'favdoc':     handleToggleFavDoc(chatId); break;

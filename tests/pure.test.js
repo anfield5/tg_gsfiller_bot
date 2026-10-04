@@ -93,6 +93,11 @@ test('DEFAULT_ICONS includes GEMINI (regression: this key went missing and rende
   assert.equal(context.getIcons_().GEMINI, '✨');
 });
 
+test('DEFAULT_ICONS includes FIELDS (used by the edit-field prompt\'s "All fields" button)', () => {
+  const { context } = createProject({ files: ['Icons.js'] });
+  assert.equal(context.getIcons_().FIELDS, '📋');
+});
+
 test('DEFAULT_ICONS includes HELP (used by /help — same regression class as the GEMINI icon above)', () => {
   const { context } = createProject({ files: ['Icons.js'] });
   assert.equal(context.getIcons_().HELP, 'ℹ️');
