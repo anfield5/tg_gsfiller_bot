@@ -6,7 +6,7 @@
  *   state:{chatId}          → JSON conversation state object
  *   lastpath:{chatId}       → JSON last opened folder/file/sheet path
  *   favdocs:{chatId}        → JSON array of favorite document descriptors (max 3)
- *   favsheets:{chatId}:{fileId} → JSON array of favorite sheet names (max 3)
+ *   favsheets:{chatId}:{fileId} → JSON array of favorite sheet names (max 5)
  */
 
 const STATE_PREFIX      = 'state:';
@@ -15,7 +15,7 @@ const FAV_DOCS_PREFIX   = 'favdocs:';
 const FAV_SHEETS_PREFIX = 'favsheets:';
 
 const MAX_FAV_DOCS   = 3;
-const MAX_FAV_SHEETS = 3;
+const MAX_FAV_SHEETS = 5;
 
 // ---------------------------------------------------------------------------
 // Conversation state
@@ -26,8 +26,32 @@ const MAX_FAV_SHEETS = 3;
  * @param {string} chatId
  * @returns {Object}
  */
+// Per-execution memo of the RAW persisted state string per chat. A single
+// update used to read the same PropertiesService key 3+ times (handleMessage,
+// routeAction, then the handler) and write it several times (each
+// _renderMenu + the handler's own setState) — and PropertiesService calls are
+// among the slowest in Apps Script. Memoizing the raw string (not the parsed
+// object) keeps getState() returning a FRESH object every call, so callers
+// that mutate state without persisting still behave exactly as before.
+// Reset per webhook call by resetStateMemo_() (see doPost).
+let _stateMemo_ = {};
+
+/** Forgets memoized state — call at the start of every webhook execution. */
+function resetStateMemo_() { _stateMemo_ = {}; }
+
+/**
+ * Returns the persisted state for a chat, or a default main-menu state.
+ * @param {string} chatId
+ * @returns {Object}
+ */
 function getState(chatId) {
-  const raw = PropertiesService.getScriptProperties().getProperty(STATE_PREFIX + chatId);
+  let raw;
+  if (Object.prototype.hasOwnProperty.call(_stateMemo_, chatId)) {
+    raw = _stateMemo_[chatId];
+  } else {
+    raw = PropertiesService.getScriptProperties().getProperty(STATE_PREFIX + chatId);
+    _stateMemo_[chatId] = raw;
+  }
   if (!raw) return { step: 'main_menu' };
   try {
     return JSON.parse(raw);
@@ -39,7 +63,8 @@ function getState(chatId) {
 
 /**
  * Persists conversation state, stripping ephemeral list caches that would
- * overflow the 9 KB PropertiesService per-property limit.
+ * overflow the 9 KB PropertiesService per-property limit. Skips the write
+ * entirely when nothing changed since the last read/write this execution.
  * @param {string} chatId
  * @param {Object} state
  */
@@ -49,15 +74,17 @@ function setState(chatId, state) {
   delete state.sheetList;
   delete state.rowList;   // can hold up to 1000 rows — never persist this
 
-  PropertiesService.getScriptProperties().setProperty(
-    STATE_PREFIX + chatId,
-    JSON.stringify(state)
-  );
+  const json = JSON.stringify(state);
+  if (Object.prototype.hasOwnProperty.call(_stateMemo_, chatId) && _stateMemo_[chatId] === json) return;
+
+  PropertiesService.getScriptProperties().setProperty(STATE_PREFIX + chatId, json);
+  _stateMemo_[chatId] = json;
 }
 
 /** Clears the conversation state for a chat. */
 function clearState(chatId) {
   PropertiesService.getScriptProperties().deleteProperty(STATE_PREFIX + chatId);
+  _stateMemo_[chatId] = null;
 }
 
 // ---------------------------------------------------------------------------

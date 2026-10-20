@@ -31,7 +31,20 @@
 //    columns (formula + trailing-merge cells are skipped automatically).
 //  - "All fields" button returns to the full field list of the row.
 //  - Test suite grew 158 -> 168.
-const BOT_VERSION = '1.7.4';
+//
+// v1.7.5 — changes since v1.7.4:
+//  - Favorite sheets (tabs) limit raised 3 -> 5 per document.
+//  - Speed pass (no behavior changes):
+//  - Chat state memoized per execution: 1 PropertiesService read, and no
+//    write when nothing changed (was 3+ reads / several writes per tap).
+//  - Edit row: formula/merge flags loaded once per row (2 batched reads)
+//    instead of 1-2 Sheets calls per column on every button tap.
+//  - Edit row list reads ~1 page of rows, not 1000; row view + row list
+//    sent as 1 Telegram message instead of 2.
+//  - Last-row scan reads 20 rows first, full 200 only if those are blank.
+//  - Removed 2 now-unused functions.
+//  - Test suite grew 168 -> 185.
+const BOT_VERSION = '1.7.5';
 
 // ---------------------------------------------------------------------------
 // Webhook entry-point
@@ -50,7 +63,7 @@ function doPost(e) {
     // See DataAccess.js — never carry a stale sheet handle into a new
     // update. Guarded on its own: a missing/broken memo reset must never
     // take down message handling for the whole request.
-    try { resetSheetMemo_(); } catch (memoErr) { logError_('resetSheetMemo_ failed: ' + memoErr); }
+    try { resetSheetMemo_(); resetStateMemo_(); } catch (memoErr) { logError_('memo reset failed: ' + memoErr); }
 
     const update = JSON.parse(e.postData.contents);
     if (update.message) handleMessage(update.message);

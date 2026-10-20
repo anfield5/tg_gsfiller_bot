@@ -13,7 +13,8 @@ as Script Properties. See comments in `Config.js.example` for every setting.
 ## Features
 
 - **Folder → file → tab navigation** with pagination, a "Continue" shortcut
-  to the last opened tab, and favourite documents/tabs that bubble to the top.
+  to the last opened tab, and favourite documents (up to 3) and tabs (up to
+  5 per document) that bubble to the top.
 - **Add row**, prompted one field at a time: formula columns and merged
   cells are auto-filled from the previous row and never prompted; a
   **Previous** button steps back through already-answered fields; **Use
@@ -32,7 +33,10 @@ as Script Properties. See comments in `Config.js.example` for every setting.
   pre-filter). Text models reply as a message; TTS models narrate the
   answer as audio.
 - Two-level caching (folder listings, sheet headers, Gemini model list) and
-  in-execution batching keep repeat navigation and add-row fast.
+  in-execution batching keep repeat navigation and add-row fast: chat state
+  is read once per request (and only written when it changed), edit-row
+  formula/merge checks are batched once per row, lists read about one page
+  of rows, and the last-row scan starts with a small 20-row read.
 - **`/version`** replies with the deployed code version (`BOT_VERSION` in
   `Code.js`) — a quick way to confirm the live deployment actually matches
   what you last pushed, without digging through the Executions log.

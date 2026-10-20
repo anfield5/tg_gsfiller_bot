@@ -217,6 +217,7 @@ function getLastColumnValues(fileId, sheetName, colIndex, n) {
 // batched read even when the phantom gap is large, rather than scanning
 // the whole sheet.
 const LAST_ROW_SCAN_WINDOW_ = 200;
+const LAST_ROW_QUICK_WINDOW_ = 20; // first, cheaper read — see _findLastNonEmptyRow_
 
 /**
  * sheet.getLastRow() reports the last row with ANY content or formatting
@@ -237,15 +238,23 @@ const LAST_ROW_SCAN_WINDOW_ = 200;
  *   nothing non-empty was found within the scan window
  */
 function _findLastNonEmptyRow_(sheet, rawLastRow, lastCol) {
-  const windowSize = Math.min(LAST_ROW_SCAN_WINDOW_, rawLastRow - 1); // never touch row 1 (header)
-  if (windowSize <= 0) return 1;
+  const maxWindow = Math.min(LAST_ROW_SCAN_WINDOW_, rawLastRow - 1); // never touch row 1 (header)
+  if (maxWindow <= 0) return 1;
 
-  const startRow = rawLastRow - windowSize + 1;
-  const values   = sheet.getRange(startRow, 1, windowSize, lastCol).getDisplayValues();
+  // Two-stage scan: the overwhelmingly common case is that the real last
+  // row is at (or within a few rows of) getLastRow(), so a small first read
+  // finds it while transferring ~10x less data than always reading the full
+  // window; only an all-blank first window falls through to the full one.
+  const windows = maxWindow > LAST_ROW_QUICK_WINDOW_ ? [LAST_ROW_QUICK_WINDOW_, maxWindow] : [maxWindow];
+  for (let w = 0; w < windows.length; w++) {
+    const windowSize = windows[w];
+    const startRow   = rawLastRow - windowSize + 1;
+    const values     = sheet.getRange(startRow, 1, windowSize, lastCol).getDisplayValues();
 
-  for (let i = values.length - 1; i >= 0; i--) {
-    if (values[i].some((v) => String(v).trim().length > 0)) {
-      return startRow + i;
+    for (let i = values.length - 1; i >= 0; i--) {
+      if (values[i].some((v) => String(v).trim().length > 0)) {
+        return startRow + i;
+      }
     }
   }
   return 1; // everything in the scan window was blank
@@ -384,27 +393,9 @@ function updateCell(fileId, sheetName, rowIndex, colIndex, value) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if the cell at (rowIndex, colIndex) contains a formula.
- * @param {string} fileId
- * @param {string} sheetName
- * @param {number} rowIndex
- * @param {number} colIndex
- * @returns {boolean}
- */
-function isCellFormula(fileId, sheetName, rowIndex, colIndex) {
-  try {
-    const formula = _getSheet_(fileId, sheetName).getRange(rowIndex, colIndex).getFormula();
-    return !!(formula && formula.toString().trim().startsWith('='));
-  } catch (e) {
-    logError_('isCellFormula failed: ' + e);
-    return false;
-  }
-}
-
-/**
  * Returns which columns [1..numCols] of a row contain a formula, in ONE
- * batched read instead of numCols separate isCellFormula() calls. Used by
- * actionAddRow (SheetActions.js) to decide which template-row columns to
+ * batched read instead of numCols separate per-cell calls. Used by
+ * actionAddRow (SheetActions.js) and the edit-row flow (Navigation.js) to decide which template-row columns to
  * replicate onto a newly appended row without an N+1 Sheets API call per
  * column.
  *
@@ -421,29 +412,6 @@ function getRowFormulaFlags(fileId, sheetName, rowIndex, numCols) {
   } catch (e) {
     logError_('getRowFormulaFlags failed: ' + e);
     return new Array(numCols).fill(false);
-  }
-}
-
-/**
- * Returns true when the cell is part of a horizontal merge where the
- * top-left anchor is to the LEFT of this column — i.e. this cell is a
- * trailing "shadow" of a merge and should be skipped during row rendering.
- *
- * @param {string} fileId
- * @param {string} sheetName
- * @param {number} rowIndex
- * @param {number} colIndex
- * @returns {boolean}
- */
-function isCellTrailingMerge(fileId, sheetName, rowIndex, colIndex) {
-  try {
-    const cell = _getSheet_(fileId, sheetName).getRange(rowIndex, colIndex);
-    if (!cell.isPartOfMerge()) return false;
-    const topLeft = cell.getMergedRanges()[0].getCell(1, 1);
-    return topLeft.getColumn() < colIndex;
-  } catch (e) {
-    logError_('isCellTrailingMerge failed: ' + e);
-    return false;
   }
 }
 

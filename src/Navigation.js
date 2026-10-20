@@ -494,7 +494,7 @@ function sendFieldPrompt(chatId, state) {
   }
 
   // Skip trailing merged cells (they share data with the cell to their left).
-  // Uses DataAccess.isCellTrailingMerge — no direct _getSheet_ call here.
+  // Uses a flag precomputed by handleAddStart — no Sheets call here.
   if (_isMergeShadowField_(state, idx)) {
     state.formData[headers[idx]] = '';
     state.currentFieldIndex      = idx + 1;
@@ -705,14 +705,18 @@ function handleEditPage(chatId, page) {
  * the 9 KB PropertiesService per-property limit.
  */
 function _loadAndRenderRowList(chatId, state) {
+  // Only fetch what this page (plus one extra row, to know whether a "Next
+  // Rows" button is needed) can actually show, instead of always pulling the
+  // newest 1000 rows × every column just to display 10. Still capped at
+  // 1000 rows overall, same as before.
+  const wanted = Math.min(1000, ((state.editPage || 0) + 1) * EDIT_ROWS_PER_PAGE_ + 1);
   let allRows;
-  try   { allRows = actionGetLastRows(state.fileId, state.sheetName, 1000); }
+  try   { allRows = actionGetLastRows(state.fileId, state.sheetName, wanted); }
   catch (e) { sendMessage(chatId, getIcons_().WARNING + ' ' + escapeHtml_(e.message)); showSheetMenu(chatId, state); return; }
-  // Store only page index and row count hint; the full rowList is passed
-  // as a parameter rather than through persisted state.
-  state.rowCount = allRows.length;
   renderRowList(chatId, state, allRows);
 }
+
+const EDIT_ROWS_PER_PAGE_ = 10;
 
 function renderRowList(chatId, state, rows) {
   const icons = getIcons_();
@@ -721,7 +725,7 @@ function renderRowList(chatId, state, rows) {
     return;
   }
 
-  const perPage  = 10;
+  const perPage  = EDIT_ROWS_PER_PAGE_;
   const page     = state.editPage || 0;
   const start    = page * perPage;
   const pageRows = rows.slice(start, start + perPage);
@@ -739,8 +743,6 @@ function renderRowList(chatId, state, rows) {
     contentText += '\n\n' + icons.LINK + ' <a href="' + url + '">Open in Google Sheets</a>';
   } catch (e) { /* link is optional */ }
 
-  sendMessage(chatId, contentText);
-
   const keyboardRows = pageRows.map(r => [{ label: 'Row ' + r.rowIndex, value: 'editrow:' + r.rowIndex }]);
 
   const navRow = [];
@@ -750,7 +752,9 @@ function renderRowList(chatId, state, rows) {
 
   keyboardRows.push([{ label: icons.ROW_NUMBER + ' Enter row number', value: 'edit_manual_request' }]);
   keyboardRows.push([{ label: icons.BACK + ' Back',              value: 'back:sheetmenu'      }]);
-  _renderMenu(chatId, state, 'Tap a row to edit:', keyboardRows);
+  // One Telegram round-trip instead of two: the list and the keyboard prompt
+  // go out together (each sendMessage is a separate ~200-400ms UrlFetch).
+  _renderMenu(chatId, state, contentText + '\n\nTap a row to edit:', keyboardRows);
 }
 
 function handleEditRowManualRequest(chatId) {
@@ -779,7 +783,7 @@ function handleEditRowManualInput(chatId, state, text) {
     state.rowValues = values;
     state.headers   = headers;
     state.step      = 'edit_row_view';
-    _loadLastRowValuesForEdit_(state);
+    _prepareEditRow_(state);
     setState(chatId, state);
     renderRowView(chatId, state);
   } catch (e) {
@@ -803,7 +807,7 @@ function handleEditRowSelect(chatId, rowIndex) {
   state.rowIndex  = rowIndex;
   state.rowValues = values;
   state.headers   = headers;
-  _loadLastRowValuesForEdit_(state);
+  _prepareEditRow_(state);
   renderRowView(chatId, state);
 }
 
@@ -825,6 +829,48 @@ function _loadLastRowValuesForEdit_(state) {
   }
 }
 
+/**
+ * Precomputes, ONCE per selected row and in 2 batched Sheets calls, which
+ * columns are formulas and which are trailing merged cells — the same
+ * approach handleAddStart uses. Previously renderRowView, the formula check
+ * on field select, and every Next/Previous lookup each re-opened the sheet
+ * and probed one cell at a time (up to 2 calls per column, repeated on every
+ * button tap). Best-effort: on failure the flags stay empty and the flow
+ * simply treats every column as editable, as it would for a plain sheet.
+ * @param {Object} state  needs fileId, sheetName, rowIndex, headers
+ */
+function _loadEditRowFlags_(state) {
+  const n = (state.headers || []).length;
+  state.editFormulaFlags    = [];
+  state.editMergeShadowFlags = [];
+  if (!state.rowIndex || n === 0) return;
+
+  try {
+    state.editFormulaFlags = getRowFormulaFlags(state.fileId, state.sheetName, state.rowIndex, n);
+  } catch (e) { /* best-effort */ }
+  try {
+    getRowMergedRanges(state.fileId, state.sheetName, state.rowIndex, n).forEach(function (m) {
+      for (let c = m.firstCol + 1; c <= m.lastCol; c++) state.editMergeShadowFlags[c - 1] = true;
+    });
+  } catch (e) { /* best-effort */ }
+}
+
+/** Everything the edit flow needs loaded once per selected row. */
+function _prepareEditRow_(state) {
+  _loadLastRowValuesForEdit_(state);
+  _loadEditRowFlags_(state);
+}
+
+/** True when column `colIndex` of the row under edit is a formula (from the precomputed flags). */
+function _isEditFormulaCol_(state, colIndex) {
+  return !!(state.editFormulaFlags && state.editFormulaFlags[colIndex - 1]);
+}
+
+/** True when column `colIndex` of the row under edit is a trailing merged cell (from the precomputed flags). */
+function _isEditShadowCol_(state, colIndex) {
+  return !!(state.editMergeShadowFlags && state.editMergeShadowFlags[colIndex - 1]);
+}
+
 function renderRowView(chatId, state) {
   const icons         = getIcons_();
   const headers       = state.headers || [];
@@ -835,24 +881,33 @@ function renderRowView(chatId, state) {
   headers.forEach((h, i) => {
     const colIndex = i + 1;
 
-    // Skip trailing merged cells using the DataAccess helper (no _getSheet_ here).
-    if (state.rowIndex && isCellTrailingMerge(state.fileId, state.sheetName, state.rowIndex, colIndex)) {
-      return;
-    }
+    // Skip trailing merged cells (precomputed per row by _loadEditRowFlags_ —
+    // no per-column Sheets call here).
+    if (_isEditShadowCol_(state, colIndex)) return;
 
     contentLines.push('<b>' + escapeHtml_(h) + '</b>: ' + escapeHtml_(formatPreview(values[i], 100)));
     keyboardRows.push([{ label: icons.EDIT + ' ' + formatPreview(h, 30), value: 'editfield:' + colIndex }]);
   });
 
-  sendMessage(chatId, 'Row ' + state.rowIndex + ' current data:\n\n' + contentLines.join('\n'));
   keyboardRows.push([{ label: icons.BACK + ' Back', value: 'back:editrow' }]);
-  _renderMenu(chatId, state, 'Select a field to edit:', keyboardRows);
+
+  // One Telegram round-trip instead of two when the row data and the prompt
+  // fit in a single message (each sendMessage is a separate UrlFetch);
+  // a very wide row falls back to the original two messages.
+  const dataText = 'Row ' + state.rowIndex + ' current data:\n\n' + contentLines.join('\n');
+  const prompt   = 'Select a field to edit:';
+  if (dataText.length + prompt.length < 3500) {
+    _renderMenu(chatId, state, dataText + '\n\n' + prompt, keyboardRows);
+  } else {
+    sendMessage(chatId, dataText);
+    _renderMenu(chatId, state, prompt, keyboardRows);
+  }
 }
 
 function handleEditFieldSelect(chatId, colIndex) {
   const state = getState(chatId);
 
-  if (isCellFormula(state.fileId, state.sheetName, state.rowIndex, colIndex)) {
+  if (_isEditFormulaCol_(state, colIndex)) {
     sendMessage(chatId, getIcons_().WARNING + ' <b>This cell contains a formula and cannot be edited inline.</b>');
     renderRowView(chatId, state);
     return;
@@ -965,9 +1020,7 @@ function handleEditUseLastEditRequest(chatId) {
  * field instead of landing on one that would just show a warning.
  */
 function _isEditableColumn_(state, colIndex) {
-  if (isCellTrailingMerge(state.fileId, state.sheetName, state.rowIndex, colIndex)) return false;
-  if (isCellFormula(state.fileId, state.sheetName, state.rowIndex, colIndex)) return false;
-  return true;
+  return !_isEditShadowCol_(state, colIndex) && !_isEditFormulaCol_(state, colIndex);
 }
 
 /**
